@@ -563,16 +563,12 @@ def alloc_extend_kernel_ascend(
     need_page = num_new_pages - num_full_new_pages
     end_new_pages = torch.cumsum(num_new_pages, 0)
     start_new_pages = end_new_pages - num_new_pages
-    pos_in_page = torch.arange(
-        page_size, device=device, dtype=torch.int32
-    )
+    pos_in_page = torch.arange(page_size, device=device, dtype=torch.int32)
     for i in range(len(prefix_lens)):
         num1 = (
             min(
                 seq_lens[i],
-                (prefix_lens[i] + page_size - 1)
-                // page_size
-                * page_size,
+                (prefix_lens[i] + page_size - 1) // page_size * page_size,
             )
             - prefix_lens[i]
         )
@@ -582,14 +578,11 @@ def alloc_extend_kernel_ascend(
             )
 
         num2 = (
-            seq_lens[i] // page_size
-            - (prefix_lens[i] + page_size - 1) // page_size
+            seq_lens[i] // page_size - (prefix_lens[i] + page_size - 1) // page_size
         ) * page_size
         if num2:
             pages = (
-                free_pages[
-                    start_new_pages[i] : end_new_pages[i] - need_page[i]
-                ]
+                free_pages[start_new_pages[i] : end_new_pages[i] - need_page[i]]
                 * page_size
             )
             out_indices[start_pos[i] + num1 : start_pos[i] + num1 + num2] = (
@@ -599,8 +592,7 @@ def alloc_extend_kernel_ascend(
         num3 = seq_lens[i] - seq_lens[i] // page_size * page_size
         if num3:
             out_indices[end_pos[i] - num3 : end_pos[i]] = (
-                free_pages[end_new_pages[i] - 1] * page_size
-                + pos_in_page[:num3]
+                free_pages[end_new_pages[i] - 1] * page_size + pos_in_page[:num3]
             ).view(-1)
     return num_new_pages
 

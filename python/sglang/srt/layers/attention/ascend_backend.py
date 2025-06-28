@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Optional
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Optional
 
 import torch
 import torch_npu
@@ -46,7 +46,6 @@ class AscendAttnBackend(AttentionBackend):
             .to(self.device)
         )
         self.mask_len = max_seq_len
-
 
     def __init__(self, model_runner: ModelRunner):
         super().__init__()
@@ -133,7 +132,7 @@ class AscendAttnBackend(AttentionBackend):
             device=query.device,
         )
 
-        torch_npu._npu_flash_attention(
+        torch_npu._npu_paged_attention(
             query=query,
             key_cache=k_cache,
             value_cache=v_cache,

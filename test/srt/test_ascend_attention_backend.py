@@ -4,8 +4,8 @@ USE_VLLM_CUSTOM_ALLREDUCE=1 python3 -m unittest test_ascend_attention_backend.Te
 """
 
 import unittest
-from urllib.parse import urlparse
 from types import SimpleNamespace
+from urllib.parse import urlparse
 
 from sglang.srt.utils import kill_process_tree
 from sglang.test.few_shot_gsm8k import run_eval as run_eval_few_shot_gsm8k
@@ -27,10 +27,7 @@ class TestAscendAttnBackend(CustomTestCase):
             DEFAULT_MODEL_NAME_FOR_TEST,
             [
                 "--attention-backend",
-                "triton",
-                "--enable-torch-compile",
-                "--cuda-graph-max-bs",
-                4,
+                "ascend",
             ],
         )
 

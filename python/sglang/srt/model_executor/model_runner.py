@@ -71,17 +71,17 @@ from sglang.srt.managers.schedule_batch import (
     global_server_args_dict,
 )
 from sglang.srt.mem_cache.allocator import (
+    AscendPagedTokenToKVPoolAllocator,
     BaseTokenToKVPoolAllocator,
     PagedTokenToKVPoolAllocator,
-    AscendPagedTokenToKVPoolAllocator,
     SWATokenToKVPoolAllocator,
     TokenToKVPoolAllocator,
 )
 from sglang.srt.mem_cache.memory_pool import (
+    AscendTokenToKVPool,
     DoubleSparseTokenToKVPool,
     MHATokenToKVPool,
     MLATokenToKVPool,
-    AscendTokenToKVPool,
     ReqToTokenPool,
     SWAKVPool,
 )
@@ -106,12 +106,12 @@ from sglang.srt.utils import (
     get_bool_env_var,
     init_custom_process_group,
     is_cuda,
-    is_npu,
     is_fa3_default_architecture,
     is_flashinfer_available,
     is_hip,
     is_hopper_with_cuda_12_3,
     is_no_spec_infer_or_topk_one,
+    is_npu,
     monkey_patch_p2p_access_check,
     monkey_patch_vllm_gguf_config,
     set_cpu_offload_max_bytes,
@@ -383,7 +383,7 @@ class ModelRunner:
                     "triton",
                     "flashmla",
                     "cutlass_mla",
-                    "ascend"
+                    "ascend",
                 ]:
                     logger.info(
                         f"MLA optimization is turned on. Use {server_args.attention_backend} backend."

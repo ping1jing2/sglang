@@ -569,7 +569,7 @@ class SWAKVPool(KVCache):
 class AscendTokenToKVPool(MHATokenToKVPool):
 
     def _create_buffers(self):
-        with self.memory_saver_adapter.region():
+        with self.memory_saver_adapter.region(GPU_MEMORY_TYPE_KV_CACHE):
             # [size, head_num, head_dim] for each layer
             # The padded slot 0 is used for writing dummy outputs from padded tokens.
             self.k_buffer = [
@@ -579,7 +579,7 @@ class AscendTokenToKVPool(MHATokenToKVPool):
                         self.page_size,
                         self.head_num,
                         self.head_dim,
-                     ),
+                    ),
                     dtype=self.store_dtype,
                     device=self.device,
                 )
@@ -592,7 +592,7 @@ class AscendTokenToKVPool(MHATokenToKVPool):
                         self.page_size,
                         self.head_num,
                         self.head_dim,
-                     ),
+                    ),
                     dtype=self.store_dtype,
                     device=self.device,
                 )
@@ -622,6 +622,7 @@ class AscendTokenToKVPool(MHATokenToKVPool):
             cache_v = cache_v.view(self.store_dtype)
 
         import torch_npu
+
         torch_npu._npu_reshape_and_cache(
             key=cache_k,
             value=cache_v,
