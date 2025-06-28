@@ -660,7 +660,7 @@ class AscendPagedTokenToKVPoolAllocator(PagedTokenToKVPoolAllocator):
         if self.debug_mode:
             assert len(torch.unique(out_indices)) == len(out_indices)
 
-        merged_value = self.ret_values.item()
+        merged_value = self.ret_values.sum()
         num_new_pages = merged_value >> 32
         if num_new_pages > len(self.free_pages):
             return None
@@ -692,7 +692,7 @@ class AscendPagedTokenToKVPoolAllocator(PagedTokenToKVPoolAllocator):
         if self.debug_mode:
             assert len(torch.unique(out_indices)) == len(out_indices)
 
-        num_new_pages = self.ret_values.item()
+        num_new_pages = self.ret_values.sum()
         if num_new_pages > len(self.free_pages):
             return None
 

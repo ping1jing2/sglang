@@ -124,10 +124,10 @@ class AscendAttnBackend(AttentionBackend):
         k_cache = forward_batch.token_to_kv_pool.get_key_buffer(layer.layer_id)
         v_cache = forward_batch.token_to_kv_pool.get_value_buffer(layer.layer_id)
 
-        query = q.view(-1, layer.tp_q_head_num * layer.qk_head_dim)
+        query = q.view(-1, layer.tp_q_head_num, layer.qk_head_dim)
         num_tokens = query.shape[0]
         output = torch.empty(
-            (query.shape[0], layer.tp_q_head_num * layer.v_head_dim),
+            (num_tokens, layer.tp_q_head_num, layer.v_head_dim),
             dtype=query.dtype,
             device=query.device,
         )
