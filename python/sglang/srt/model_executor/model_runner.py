@@ -73,6 +73,7 @@ from sglang.srt.managers.schedule_batch import (
 from sglang.srt.mem_cache.allocator import (
     BaseTokenToKVPoolAllocator,
     PagedTokenToKVPoolAllocator,
+    AscendPagedTokenToKVPoolAllocator,
     SWATokenToKVPoolAllocator,
     TokenToKVPoolAllocator,
 )
@@ -80,6 +81,7 @@ from sglang.srt.mem_cache.memory_pool import (
     DoubleSparseTokenToKVPool,
     MHATokenToKVPool,
     MLATokenToKVPool,
+    AscendTokenToKVPool,
     ReqToTokenPool,
     SWAKVPool,
 )
@@ -104,6 +106,7 @@ from sglang.srt.utils import (
     get_bool_env_var,
     init_custom_process_group,
     is_cuda,
+    is_npu,
     is_fa3_default_architecture,
     is_flashinfer_available,
     is_hip,
@@ -116,6 +119,7 @@ from sglang.srt.utils import (
 )
 
 _is_hip = is_hip()
+_is_npu = is_npu()
 _is_cpu_amx_available = cpu_has_amx_support()
 
 # Use a small KV cache pool size for tests in CI
@@ -344,6 +348,8 @@ class ModelRunner:
                     server_args.attention_backend = "fa3"
                 elif _is_hip:
                     server_args.attention_backend = "aiter"
+                elif _is_npu:
+                    server_args.attention_backend = "ascend"
                 else:
                     server_args.attention_backend = (
                         "flashinfer" if is_flashinfer_available() else "triton"
@@ -377,6 +383,7 @@ class ModelRunner:
                     "triton",
                     "flashmla",
                     "cutlass_mla",
+                    "ascend"
                 ]:
                     logger.info(
                         f"MLA optimization is turned on. Use {server_args.attention_backend} backend."
@@ -1042,7 +1049,18 @@ class ModelRunner:
             # Draft worker shares req_to_token_pool with the target worker.
             assert self.is_draft_worker
 
-        if self.use_mla_backend:
+        if self.server_args.attention_backend == "ascend" and not self.use_mla_backend:
+            self.token_to_kv_pool = AscendTokenToKVPool(
+                self.max_total_num_tokens,
+                page_size=self.page_size,
+                dtype=self.kv_cache_dtype,
+                head_num=self.model_config.get_num_kv_heads(get_attention_tp_size()),
+                head_dim=self.model_config.head_dim,
+                layer_num=self.model_config.num_hidden_layers,
+                device=self.device,
+                enable_memory_saver=self.server_args.enable_memory_saver,
+            )
+        elif self.use_mla_backend:
             self.token_to_kv_pool = MLATokenToKVPool(
                 self.max_total_num_tokens,
                 page_size=self.page_size,
@@ -1122,13 +1140,22 @@ class ModelRunner:
                         kvcache=self.token_to_kv_pool,
                     )
             else:
-                self.token_to_kv_pool_allocator = PagedTokenToKVPoolAllocator(
-                    self.max_total_num_tokens,
-                    page_size=self.page_size,
-                    dtype=self.kv_cache_dtype,
-                    device=self.device,
-                    kvcache=self.token_to_kv_pool,
-                )
+                if _is_npu:
+                    self.token_to_kv_pool_allocator = AscendPagedTokenToKVPoolAllocator(
+                        self.max_total_num_tokens,
+                        page_size=self.page_size,
+                        dtype=self.kv_cache_dtype,
+                        device=self.device,
+                        kvcache=self.token_to_kv_pool,
+                    )
+                else:
+                    self.token_to_kv_pool_allocator = PagedTokenToKVPoolAllocator(
+                        self.max_total_num_tokens,
+                        page_size=self.page_size,
+                        dtype=self.kv_cache_dtype,
+                        device=self.device,
+                        kvcache=self.token_to_kv_pool,
+                    )
         else:
             assert self.is_draft_worker
 
@@ -1175,6 +1202,10 @@ class ModelRunner:
             from sglang.srt.layers.attention.aiter_backend import AiterAttnBackend
 
             return AiterAttnBackend(self)
+        elif self.server_args.attention_backend == "ascend":
+            from sglang.srt.layers.attention.ascend_backend import AscendAttnBackend
+
+            return AscendAttnBackend(self)
         elif self.server_args.attention_backend == "triton":
             assert not self.model_config.is_encoder_decoder, (
                 "Cross attention is not supported in the triton attention backend. "

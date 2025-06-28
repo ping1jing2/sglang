@@ -1554,8 +1554,8 @@ def get_compiler_backend() -> str:
         for k, v in predefined_config.items():
             setattr(compiler_config.experimental_config, k, v)
 
-        npu_backend = torchair.get_npu_backend(compiler_config=compiler_config)
-        return npu_backend
+        ascend_backend = torchair.get_npu_backend(compiler_config=compiler_config)
+        return ascend_backend
 
     return "inductor"
 
@@ -2440,7 +2440,7 @@ def bind_or_assign(target, source):
 
 
 def support_triton(backend: str) -> bool:
-    return backend not in ["torch_native", "intel_amx"]
+    return backend not in ["torch_native", "intel_amx", "ascend"]
 
 
 try:
