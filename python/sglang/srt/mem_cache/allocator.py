@@ -541,6 +541,7 @@ class PagedTokenToKVPoolAllocator(BaseTokenToKVPoolAllocator):
         self.is_not_in_free_group = True
         self.free_group = []
 
+
 def alloc_extend_kernel_ascend(
     prefix_lens,
     seq_lens,
