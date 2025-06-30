@@ -889,6 +889,7 @@ class MLATokenToKVPool(KVCache):
                 self.kv_buffer[layer_id][chunk_indices] = kv_chunk
         torch.cuda.synchronize()
 
+
 class AscendMLAPagedTokenToKVPool(MLATokenToKVPool):
     def __init__(
         self,
@@ -926,7 +927,7 @@ class AscendMLAPagedTokenToKVPool(MLATokenToKVPool):
                     (
                         self.size // self.page_size + 1,
                         self.page_size,
-                        self.kv_lora_rank + self.qk_rope_head_dim
+                        self.kv_lora_rank + self.qk_rope_head_dim,
                     ),
                     dtype=self.store_dtype,
                     device=self.device,
@@ -965,7 +966,8 @@ class AscendMLAPagedTokenToKVPool(MLATokenToKVPool):
             ),
             slot_indices=loc,
         )
-            
+
+
 class DoubleSparseTokenToKVPool(KVCache):
     def __init__(
         self,

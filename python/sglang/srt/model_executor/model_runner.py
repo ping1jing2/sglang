@@ -79,11 +79,11 @@ from sglang.srt.mem_cache.allocator import (
     TokenToKVPoolAllocator,
 )
 from sglang.srt.mem_cache.memory_pool import (
+    AscendMLAPagedTokenToKVPool,
     AscendTokenToKVPool,
     DoubleSparseTokenToKVPool,
     MHATokenToKVPool,
     MLATokenToKVPool,
-    AscendMLAPagedTokenToKVPool,
     ReqToTokenPool,
     SWAKVPool,
 )
