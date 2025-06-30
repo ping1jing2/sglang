@@ -306,6 +306,7 @@ class ModelRunner:
             self.init_cuda_graphs()
         else:
             self.cuda_graph_runner = None
+            self.cuda_graph_mem_usage = 0
             self.init_attention_backend()
 
         # auxiliary hidden capture mode. TODO: expose this to server args?
