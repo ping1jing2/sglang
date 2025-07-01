@@ -699,9 +699,5 @@ class AscendPagedTokenToKVPoolAllocator(PagedTokenToKVPoolAllocator):
         return out_indices
 
     def clear(self):
-        # The padded slot 0 is used for writing dummy outputs from padded tokens.
-        self.free_pages = torch.arange(
-            1, self.num_pages + 1, dtype=torch.int32, device=self.device
-        )
-        self.is_not_in_free_group = True
-        self.free_group = []
+        super().clear()
+        self.free_pages = self.free_pages.to(torch.int32)
