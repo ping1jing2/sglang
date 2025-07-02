@@ -9,7 +9,7 @@ from torch.nn.functional import scaled_dot_product_attention
 
 from sglang.srt.configs.model_config import AttentionArch
 from sglang.srt.layers.attention.base_attn_backend import AttentionBackend
-from sglang.srt.layers.attention.torch_native_backend import _run_sdpa_forward_extend
+from sglang.srt.layers.attention.torch_native_backend import TorchNativeAttnBackend
 from sglang.srt.layers.radix_attention import AttentionType
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 
@@ -59,6 +59,7 @@ class AscendAttnBackend(AttentionBackend):
         if self.use_mla:
             self.kv_lora_rank = model_runner.model_config.kv_lora_rank
             self.qk_rope_head_dim = model_runner.model_config.qk_rope_head_dim
+            self.native_attn = TorchNativeAttnBackend(model_runner)
 
     def init_forward_metadata(self, forward_batch: ForwardBatch):
         """Init the metadata for a forward pass."""
@@ -131,7 +132,7 @@ class AscendAttnBackend(AttentionBackend):
             ):
                 causal = False
 
-            _run_sdpa_forward_extend(
+            self.native_attn._run_sdpa_forward_extend(
                 q_,
                 o_,
                 k_cache.view(
