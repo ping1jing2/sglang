@@ -1,6 +1,6 @@
 """
 Usage:
-USE_VLLM_CUSTOM_ALLREDUCE=1 python3 -m unittest test_ascend_attention_backend.TestAscendAttnBackend.test_mmlu
+python3 -m unittest test_ascend_attention_backend.TestAscendAttnBackend.test_gsm8k
 """
 
 import unittest
