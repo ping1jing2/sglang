@@ -8,6 +8,10 @@ import torch
 
 from sglang.srt.managers.io_struct import ProfileReq, ProfileReqOutput, ProfileReqType
 from sglang.srt.model_executor.forward_batch_info import ForwardMode
+from sglang.srt.utils import is_only_npu
+
+if is_only_npu():
+    import torch_npu
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +57,8 @@ class SchedulerProfilerMixin:
             output_dir = os.getenv("SGLANG_TORCH_PROFILER_DIR", "/tmp")
         if activities is None:
             activities = ["CPU", "GPU"]
+            if is_only_npu():
+                activities.append("NPU")
 
         self.torch_profiler_output_dir = output_dir
         self.torch_profiler_with_stack = with_stack
@@ -94,10 +100,16 @@ class SchedulerProfilerMixin:
         with_stack = self.torch_profiler_with_stack
         record_shapes = self.torch_profiler_record_shapes
 
-        activity_map = {
-            "CPU": torch.profiler.ProfilerActivity.CPU,
-            "GPU": torch.profiler.ProfilerActivity.CUDA,
-        }
+        if is_only_npu():
+            activity_map = {
+                "CPU": torch_npu.profiler.ProfilerActivity.CPU,
+                "GPU": torch.profiler.ProfilerActivity.CUDA,
+            }
+        else:
+            activity_map = {
+                "CPU": torch.profiler.ProfilerActivity.CPU,
+                "NPU": torch.profiler.ProfilerActivity.CUDA,
+            }
         torchprof_activities = [
             activity_map[a] for a in activities if a in activity_map
         ]
@@ -132,11 +144,29 @@ class SchedulerProfilerMixin:
             self.rpd_profiler.rangePush("", "rpd profile range", "")
             self.profile_in_progress = True
         elif torchprof_activities:
-            self.torch_profiler = torch.profiler.profile(
-                activities=torchprof_activities,
-                with_stack=with_stack if with_stack is not None else True,
-                record_shapes=record_shapes if record_shapes is not None else False,
-            )
+            if is_only_npu():
+                experimental_config = torch_npu.profiler._ExperimentalConfig(
+                    profiler_level=torch_npu.profiler.ProfilerLevel.Level1,
+                    aic_metrics=torch_npu.profiler.AiCMetrics.PipeUtilization,
+                    record_op_args=False,
+                )
+
+                self.torch_profiler = torch_npu.profiler.profile(
+                    activities=torchprof_activities,
+                    with_stack=with_stack if with_stack is not None else True,
+                    record_shapes=record_shapes if record_shapes is not None else False,
+                    profile_memory=False,
+                    experimental_config=experimental_config,
+                    on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(
+                        self.torch_profiler_output_dir
+                    ),
+                )
+            else:
+                self.torch_profiler = torch.profiler.profile(
+                    activities=torchprof_activities,
+                    with_stack=with_stack if with_stack is not None else True,
+                    record_shapes=record_shapes if record_shapes is not None else False,
+                )
             self.torch_profiler.start()
             self.profile_in_progress = True
 
@@ -166,15 +196,16 @@ class SchedulerProfilerMixin:
         logger.info("Stop profiling" + stage_suffix + "...")
         if self.torch_profiler is not None:
             self.torch_profiler.stop()
-            self.torch_profiler.export_chrome_trace(
-                os.path.join(
-                    self.torch_profiler_output_dir,
-                    self.profile_id
-                    + f"-TP-{self.tp_rank}"
-                    + stage_suffix
-                    + ".trace.json.gz",
+            if not is_only_npu():
+                self.torch_profiler.export_chrome_trace(
+                    os.path.join(
+                        self.torch_profiler_output_dir,
+                        self.profile_id
+                        + f"-TP-{self.tp_rank}"
+                        + stage_suffix
+                        + ".trace.json.gz",
+                    )
                 )
-            )
             torch.distributed.barrier(self.tp_cpu_group)
 
         if self.rpd_profiler is not None:
