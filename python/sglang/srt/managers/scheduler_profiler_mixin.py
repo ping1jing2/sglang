@@ -145,8 +145,14 @@ class SchedulerProfilerMixin:
                 activities=torchprof_activities,
                 with_stack=with_stack if with_stack is not None else True,
                 record_shapes=record_shapes if record_shapes is not None else False,
-                on_trace_ready=None if not is_only_npu() else torch_npu.profiler.tensorboard_trace_handler(
-                    self.torch_profiler_output_dir)
+                **{} if not is_only_npu() else {
+                    "on_trace_ready": torch_npu.profiler.tensorboard_trace_handler(self.torch_profiler_output_dir),
+                    "experimental_config": torch_npu.profiler._ExperimentalConfig(
+                        profiler_level=torch_npu.profiler.ProfilerLevel.Level1,
+                        aic_metrics=torch_npu.profiler.AiCMetrics.PipeUtilization,
+                        record_op_args=False
+                    )
+                }
             )
             self.torch_profiler.start()
             self.profile_in_progress = True
