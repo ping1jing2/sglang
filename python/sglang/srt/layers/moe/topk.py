@@ -597,7 +597,100 @@ else:
     fused_topk_native = fused_topk_torch_native
 
 
-def select_experts(
+def native_grouped_topk(
+    topk_weights: torch.Tensor,
+    num_expert_group: Optional[int],
+    topk_group: Optional[int],
+):
+    topk_group = 0 if topk_group is None else topk_group
+    num_expert_group = 0 if num_expert_group is None else num_expert_group
+
+    num_token = topk_weights.shape[0]
+    grouped_weights = topk_weights.view(num_token, num_expert_group,
+                                        -1).max(dim=-1).values
+    topk_group_indices = torch.topk(grouped_weights.to(torch.float32),
+                                    k=topk_group,
+                                    dim=-1,
+                                    sorted=False)[1]
+    topk_group_mask = torch.zeros_like(grouped_weights)
+    topk_group_mask.scatter_(1, topk_group_indices, 1)
+    topk_weights_mask = (topk_group_mask.unsqueeze(-1), expand(
+        num_token, num_expert_group,
+        topk_weights.shape[-1] // num_expert_group).reshape(num_token, -1))
+    topk_weights = topk_weights.masked_fill(~topk_weights_mask.bool(), 0.0)
+
+    return topk_weights
+
+
+def select_experts_npu(
+    hidden_states: torch.Tensor,
+    router_logits: torch.Tensor,
+    top_k: int,
+    *,
+    use_grouped_topk: bool = False,
+    renormalize: bool = False,
+    topk_group: Optional[int] = None,
+    num_expert_group: Optional[int] = None,
+    num_fused_shared_experts: int = 0,
+    custom_routing_function: Optional[Callable] = None,
+    correction_bias: Optional[torch.Tensor] = None,
+    torch_native: bool = False,
+    routed_scaling_factor: Optional[float] = None,
+    num_token_non_padded: Optional[torch.Tensor] =None,
+    expert_location_dispatch_info: Optional[ExpertLocationDispatchInfo] = None,
+) -> TopKOutput:
+
+    topk_weights = router_logits.sigmoid()
+
+    if use_grouped_topk:
+        assert topk_group is not None
+        assert num_expert_group is not None
+
+        if correction_bias is not None:
+            # Store original scores before applying correction bias. We use biased
+            # scores for expert selection but original scores for routing weights
+            original_weights = topk_weights
+            topk_weights = topk_weights + correction_bias.unsqueeze(0)
+
+        topk_weights = native_grouped_topk(topk_weights, num_expert_group,
+                                           topk_group)
+
+        if correction_bias is not None:
+            topk_ids = torch.topk(topk_weights.to(torch.float32),
+                                  k=top_k,
+                                  dim=-1,
+                                  sorted=False)[1]
+            # Use original unbiased scores for the routing weights
+            topk_weights = original_weights.gather(1, topk_ids)
+        else:
+            topk_weights, topk_ids = torch.topk(topk_weights.to(torch.float32),
+                                                k=top_k,
+                                                dim=-1,
+                                                sorted=False)
+    elif custom_routing_function is None:
+        topk_weights, topk_ids = topk_weights.topk(top_k, dim=-1)
+        topk_weights = topk_weights.to(hidden_states.dtype)
+    else:
+        topk_weights, topk_ids = custom_routing_function(
+            hidden_states=hidden_states,
+            gating_output=router_logits,
+            topk=top_k,
+            renormalize=renormalize,
+        )
+        # Required by npu_moe_init_routing
+        topk_ids = topk_ids.to(torch.int32)
+        return topk_weights, topk_ids
+
+    # Required by npu_moe_init_routing
+    topk_ids = topk_ids.to(torch.int32)
+    
+    if renormalize:
+        topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
+
+    return TopKOutput(topk_weights, topk_ids, router_logits)
+
+
+def select_experts_native(
     hidden_states: torch.Tensor,
     router_logits: torch.Tensor,
     top_k: int,
@@ -689,3 +782,54 @@ def select_experts(
     get_global_expert_distribution_recorder().on_select_experts(topk_ids=topk_ids)
 
     return TopKOutput(topk_weights, topk_ids, router_logits)
+
+
+def select_experts(
+    hidden_states: torch.Tensor,
+    router_logits: torch.Tensor,
+    top_k: int,
+    *,
+    use_grouped_topk: bool = False,
+    renormalize: bool = False,
+    topk_group: Optional[int] = None,
+    num_expert_group: Optional[int] = None,
+    num_fused_shared_experts: int = 0,
+    custom_routing_function: Optional[Callable] = None,
+    correction_bias: Optional[torch.Tensor] = None,
+    torch_native: bool = False,
+    routed_scaling_factor: Optional[float] = None,
+    num_token_non_padded: Optional[torch.Tensor] = None,
+    expert_location_dispatch_info: Optional[ExpertLocationDispatchInfo] = None,
+) -> TopKOutput:
+    if _is_npu:
+        return select_experts_npu(hidden_states=hidden_states,
+                                  router_logits=router_logits,
+                                  top_k=top_k,
+                                  use_grouped_topk=use_grouped_topk,
+                                  renormalize=renormalize,
+                                  topk_group=topk_group,
+                                  num_expert_group=num_expert_group,
+                                  num_fused_shared_experts=num_fused_shared_experts,
+                                  custom_routing_function=custom_routing_function,
+                                  correction_bias=correction_bias,
+                                  torch_native=torch_native,
+                                  routed_scaling_factor=routed_scaling_factor,
+                                  num_token_non_padded=num_token_non_padded,
+                                  expert_location_dispatch_info=expert_location_dispatch_info,
+        )
+    else:
+        return select_experts_native(hidden_states=hidden_states,
+                                     router_logits=router_logits,
+                                     top_k=top_k,
+                                     use_grouped_topk=use_grouped_topk,
+                                     renormalize=renormalize,
+                                     topk_group=topk_group,
+                                     num_expert_group=num_expert_group,
+                                     num_fused_shared_experts=num_fused_shared_experts,
+                                     custom_routing_function=custom_routing_function,
+                                     correction_bias=correction_bias,
+                                     torch_native=torch_native,
+                                     routed_scaling_factor=routed_scaling_factor,
+                                     num_token_non_padded=num_token_non_padded,
+                                     expert_location_dispatch_info=expert_location_dispatch_info,
+        )

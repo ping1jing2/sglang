@@ -337,9 +337,9 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
         no_combine: bool = False,
         routed_scaling_factor: Optional[float] = None,
     ) -> torch.Tensor:
-        from sglang.srt.layers.moe.fused_moe_native import moe_forward_native
+        from sglang.srt.layers.moe.fused_moe_native import moe_forward_npu
 
-        return moe_forward_native(
+        return moe_forward_npu(
             layer,
             x,
             topk_output,
