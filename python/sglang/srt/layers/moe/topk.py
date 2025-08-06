@@ -754,7 +754,7 @@ def select_experts_npu(
     if renormalize:
         topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
 
-    return TopKOutput(topk_weights, topk_ids, router_logits)
+    return StandardTopKOutput(topk_weights, topk_ids, router_logits)
 
 
 def select_experts_native(
