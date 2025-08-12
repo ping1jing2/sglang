@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from sglang.srt.model_executor.cuda_graph_runner import CudaGraphRunner
+from sglang.srt.model_executor.graph_runner import GraphRunner
 from sglang.srt.utils import is_npu
 
 logger = logging.getLogger(__name__)
@@ -44,7 +44,7 @@ if _is_npu:
     torch.cuda.graph_pool_handle = torch.npu.graph_pool_handle
 
 
-class NPUGraphRunner(CudaGraphRunner):
+class NPUGraphRunner(GraphRunner):
     """A NPUGraphRunner runs the forward pass of a model with npu graph and torch.compile."""
 
     def __init__(self, model_runner: ModelRunner):
@@ -73,6 +73,9 @@ class NPUGraphRunner(CudaGraphRunner):
         self.graphs[self.bs].update(
             cpu_update_input=[{"actual_seq_lengths_kv": seq_lens}]
         )
+
+    def _zero_tensor_with_dtype(self, tshape):
+        return torch.zeros(tshape, dtype=torch.int32)
 
     def replay(
         self,
