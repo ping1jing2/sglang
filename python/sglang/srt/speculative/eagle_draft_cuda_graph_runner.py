@@ -15,11 +15,6 @@ from sglang.srt.model_executor.cuda_graph_runner import (
     set_global_graph_memory_pool,
     set_torch_compile_config,
 )
-from sglang.srt.model_executor.forward_batch_info import (
-    CaptureHiddenMode,
-    ForwardBatch,
-    ForwardMode,
-)
 from sglang.srt.speculative.eagle_utils import EagleDraftInput
 from sglang.srt.utils import (
     require_attn_tp_gather,
@@ -121,7 +116,7 @@ class EAGLEDraftCudaGraphRunner:
                 self.capture()
         except RuntimeError as e:
             raise Exception(
-                f"Capture cuda graph failed: {e}\n{CUDA_GRAPH_CAPTURE_FAILED_MSG}"
+                f"Capture cuda graph failed: {e}\n{GRAPH_CAPTURE_FAILED_MSG}"
             )
 
     def can_run(self, forward_batch: ForwardBatch):

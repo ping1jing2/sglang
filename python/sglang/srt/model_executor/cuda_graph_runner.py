@@ -11,7 +11,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Run the model with cuda graph and torch.compile."""
+"""Run the model with device graph and torch.compile."""
 
 from __future__ import annotations
 
@@ -51,8 +51,12 @@ from sglang.srt.model_executor.forward_batch_info import (
 from sglang.srt.patch_torch import monkey_patch_torch_compile
 from sglang.srt.two_batch_overlap import TboCudaGraphRunnerPlugin
 from sglang.srt.utils import (
+    create_device_graph,
+    device_graph_func,
+    device_synchronize,
     empty_context,
     get_available_gpu_memory,
+    get_device_graph_pool_handle,
     get_device_memory_capacity,
     rank0_log,
     require_attn_tp_gather,
@@ -221,7 +225,7 @@ def get_batch_sizes_to_capture(model_runner: ModelRunner):
     return capture_bs, compile_bs
 
 
-# Reuse this memory pool across all cuda graph runners.
+# Reuse this memory pool across all device graph runners.
 global_graph_memory_pool = None
 
 
@@ -234,12 +238,13 @@ def set_global_graph_memory_pool(val):
     global_graph_memory_pool = val
 
 
-class CudaGraphRunner:
+class GraphRunner:
     """A CudaGraphRunner runs the forward pass of a model with cuda graph and torch.compile."""
 
     def __init__(self, model_runner: ModelRunner):
         # Parse args
         self.model_runner = model_runner
+        self.device = model_runner.device
         self.graphs = {}
         self.output_buffers = {}
         self.enable_torch_compile = model_runner.server_args.enable_torch_compile
@@ -265,7 +270,7 @@ class CudaGraphRunner:
 
         # Batch sizes to capture
         self.capture_bs, self.compile_bs = get_batch_sizes_to_capture(model_runner)
-        rank0_log(f"Capture cuda graph bs {self.capture_bs}")
+        rank0_log(f"Capture graph bs {self.capture_bs}")
         self.capture_forward_mode = ForwardMode.DECODE
         self.capture_hidden_mode = CaptureHiddenMode.NULL
         self.num_tokens_per_bs = 1
@@ -305,13 +310,13 @@ class CudaGraphRunner:
             self.model_runner.lora_manager.init_cuda_graph_batch_info(self.max_bs)
 
         # Graph inputs
-        with torch.device("cuda"):
+        with torch.device(model_runner.device):
             self.input_ids = torch.zeros((self.max_num_token,), dtype=torch.int64)
             self.req_pool_indices = torch.zeros((self.max_bs,), dtype=torch.int32)
             self.seq_lens = torch.full(
                 (self.max_bs,), self.seq_len_fill_value, dtype=torch.int32
             )
-            self.out_cache_loc = torch.zeros((self.max_num_token,), dtype=torch.int64)
+            self.out_cache_loc = self._zero_tensor_with_dtype((self.max_num_token,))
             self.positions = torch.zeros((self.max_num_token,), dtype=torch.int64)
             self.mrope_positions = torch.zeros((3, self.max_bs), dtype=torch.int64)
             self.num_token_non_padded = torch.zeros((1,), dtype=torch.int32)
@@ -366,12 +371,12 @@ class CudaGraphRunner:
                     * self.num_tokens_per_bs
                 ),
                 dtype=torch.bool,
-                device="cuda",
+                device=model_runner.device,
             )
             self.next_token_logits_buffer = torch.zeros(
                 (self.max_num_token, self.model_runner.model_config.vocab_size),
                 dtype=torch.float,
-                device="cuda",
+                device=model_runner.device,
             )
 
         # Capture
@@ -380,8 +385,11 @@ class CudaGraphRunner:
                 self.capture()
         except RuntimeError as e:
             raise Exception(
-                f"Capture cuda graph failed: {e}\n{CUDA_GRAPH_CAPTURE_FAILED_MSG}"
+                f"Capture device graph failed: {e}\n{GRAPH_CAPTURE_FAILED_MSG}"
             )
+
+    def _zero_tensor_with_dtype(self, tshape):
+        return torch.zeros(tshape, dtype=torch.int64)
 
     def can_run(self, forward_batch: ForwardBatch):
         if self.require_mlp_tp_gather:
@@ -502,8 +510,13 @@ class CudaGraphRunner:
             )
             logger.info(log_message)
 
+    def _capture_graph(self, graph, pool, stream, run_once_fn):
+        with device_graph_func(self.device)(graph, pool=pool, stream=stream):
+            out = run_once_fn()
+        return out
+
     def capture_one_batch_size(self, bs: int, forward: Callable):
-        graph = torch.cuda.CUDAGraph()
+        graph = create_device_graph()
         stream = self.stream
         num_tokens = bs * self.num_tokens_per_bs
 
@@ -643,19 +656,17 @@ class CudaGraphRunner:
             return logits_output_or_pp_proxy_tensors
 
         for _ in range(2):
-            torch.cuda.synchronize()
+            device_synchronize(self.device)
             self.model_runner.tp_group.barrier()
-
             run_once()
 
         if get_global_graph_memory_pool() is None:
-            set_global_graph_memory_pool(torch.cuda.graph_pool_handle())
+            set_global_graph_memory_pool(get_device_graph_pool_handle(self.device))
         # Set graph pool id globally to be able to use symmetric memory
         set_graph_pool_id(get_global_graph_memory_pool())
-        with torch.cuda.graph(
-            graph, pool=get_global_graph_memory_pool(), stream=stream
-        ):
-            out = run_once()
+        out = self._capture_graph(
+            graph, get_global_graph_memory_pool(), stream, run_once
+        )
 
         return graph, out
 
@@ -837,7 +848,7 @@ class CudaGraphRunner:
         return spec_info
 
 
-CUDA_GRAPH_CAPTURE_FAILED_MSG = (
+GRAPH_CAPTURE_FAILED_MSG = (
     "Possible solutions:\n"
     "1. set --mem-fraction-static to a smaller value (e.g., 0.8 or 0.7)\n"
     "2. set --cuda-graph-max-bs to a smaller value (e.g., 16)\n"
