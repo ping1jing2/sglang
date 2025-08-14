@@ -16,13 +16,18 @@ from sglang.srt.utils import (
     get_device_capability,
     is_blackwell,
     is_cuda,
+    is_npu,
     print_info_once,
 )
 
 _is_cuda = is_cuda()
+_is_npu = is_npu()
 
 if _is_cuda:
     from sgl_kernel.flash_attn import flash_attn_varlen_func
+
+if _is_npu:
+    import torch_npu
 
 from sglang.srt.distributed import (
     split_tensor_along_last_dim,
@@ -331,10 +336,54 @@ class VisionFlash3Attention(nn.Module):
         return output
 
 
+class VisionAscendAttention(nn.Module):
+
+    def __init__(
+        self,
+        **kwargs,
+    ):
+        if not _is_npu:
+            raise Exception("VisionAscendAttention is only available for ascend npu")
+        super().__init__()
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        cu_seqlens: Optional[Union[SingletonCache, torch.Tensor]],
+        scale_value: int,
+        num_heads: int,
+        num_kv_heads: int,
+        **kwargs,
+    ) -> torch.Tensor:
+        r"""
+        Args:
+            cu_seqlens: [b]
+        Returns:
+             [b * s, h, head_size]
+        """
+        output = torch.empty_like(q)
+        # operator requires pta version >= 2.5.1
+        torch_npu._npu_flash_attention_unpad(
+            query=q,
+            key=k,
+            value=v,
+            seq_len=cu_seqlens,
+            scale_value=scale_value,
+            num_heads=num_heads,
+            num_kv_heads=num_kv_heads,
+            out=output,
+        )
+
+        return output
+
+
 QKV_BACKEND_IMPL = {
     "triton_attn": VisionTritonAttention,
     "sdpa": VisionSdpaAttention,
     "fa3": VisionFlash3Attention,
+    "ascend": VisionAscendAttention,
 }
 
 

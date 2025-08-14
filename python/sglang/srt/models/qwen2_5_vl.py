@@ -56,7 +56,7 @@ from sglang.srt.managers.schedule_batch import MultimodalDataItem, MultimodalInp
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.model_loader.weight_utils import default_weight_loader
 from sglang.srt.models.qwen2 import Qwen2Model
-from sglang.srt.utils import add_prefix
+from sglang.srt.utils import add_prefix, is_npu
 
 logger = logging.getLogger(__name__)
 
@@ -468,7 +468,15 @@ class Qwen2_5_VLForConditionalGeneration(nn.Module):
         super().__init__()
 
         self.config = config
-        self.visual = Qwen2_5_VisionTransformer(
+        if is_npu():
+            from sglang.srt.models.ascend.qwen2_5_vl import (
+                AscendQwen2_5_VisionTransformer,
+            )
+
+            vision_transformer_class = AscendQwen2_5_VisionTransformer
+        else:
+            vision_transformer_class = Qwen2_5_VisionTransformer
+        self.visual = vision_transformer_class(
             config.vision_config,
             norm_eps=getattr(config, "rms_norm_eps", 1e-6),
             # NOTE: Qwen2_5-VL vision encoder currently supports BitsAndBytes 4-bit quantization.
