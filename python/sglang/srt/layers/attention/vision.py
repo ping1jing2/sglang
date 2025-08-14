@@ -17,12 +17,16 @@ from sglang.srt.utils import (
     is_blackwell,
     is_cuda,
     print_info_once,
+    is_npu,
 )
 
 _is_cuda = is_cuda()
 
 if _is_cuda:
     from sgl_kernel.flash_attn import flash_attn_varlen_func
+
+if is_npu():
+    import torch_npu
 
 from sglang.srt.distributed import (
     split_tensor_along_last_dim,
@@ -331,10 +335,52 @@ class VisionFlash3Attention(nn.Module):
         return output
 
 
+class VisionAscendAttention(nn.Module):
+
+    def __init__(
+        self,
+        **kwargs,
+    ):
+        super().__init__()
+    
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        cu_seqlens: Optional[Union[SingletonCache, torch.Tensor]],
+        scale_value: int,
+        num_heads: int,
+        num_kv_heads: int,
+        **kwargs,
+    ) -> torch.Tensor:
+        r"""
+        Args:
+            cu_seqlens: [b]
+        Returns:
+             [b * s, h, head_size]
+        """
+        output = torch.empty_like(q)
+        # operator requires pta version >= 2.5.1
+        torch_npu._npu_flash_attention_unpad(
+            query=q,
+            key=k,
+            value=v,
+            seq_len=cu_seqlens,
+            scale_value=scale_value,
+            num_heads=num_heads,
+            num_kv_heads=num_kv_heads,
+            out=output,
+        )
+
+        return output
+
+
 QKV_BACKEND_IMPL = {
     "triton_attn": VisionTritonAttention,
     "sdpa": VisionSdpaAttention,
     "fa3": VisionFlash3Attention,
+    "ascend": VisionAscendAttention,
 }
 
 
