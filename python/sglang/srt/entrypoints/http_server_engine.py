@@ -23,7 +23,7 @@ def launch_server_process(server_args: ServerArgs) -> multiprocessing.Process:
     p.start()
 
     base_url = server_args.url()
-    timeout = 300.0  # Increased timeout to 5 minutes for downloading large models
+    timeout = 9000.0  # Increased timeout to 150 minutes for downloading large models
     start_time = time.perf_counter()
 
     with requests.Session() as session:

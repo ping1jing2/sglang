@@ -19,6 +19,7 @@ import inspect
 import json
 import logging
 import os
+import threading
 import time
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Union
@@ -91,6 +92,7 @@ from sglang.srt.mem_cache.memory_pool import (
     SWAKVPool,
 )
 from sglang.srt.model_executor.cuda_graph_runner import CudaGraphRunner
+from sglang.srt.model_executor.piecewise_graph_runner import PiecewiseGraphRunner
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTensors
 from sglang.srt.model_executor.npu_graph_runner import NPUGraphRunner
 from sglang.srt.model_loader import get_model
@@ -126,6 +128,8 @@ from sglang.srt.weight_sync.tensor_bucket import (
     FlattenedTensorBucket,
     FlattenedTensorMetadata,
 )
+
+import sglang.srt.model_executor.compilation.npu_compiler_backend
 
 _is_hip = is_hip()
 _is_npu = is_npu()
@@ -343,8 +347,14 @@ class ModelRunner:
             self.init_attention_backend()
             self.init_cuda_graphs()
         elif self.device == "npu":
-            self.init_attention_backend()
-            self.init_cuda_graphs()
+            if self.server_args.enable_piecewise_graph:
+                self.graph_runner = None
+                self.cuda_graph_mem_usage = 0
+                self.init_attention_backend()
+                self.init_piecewise_graph()
+            else:
+                self.init_attention_backend()
+                self.init_cuda_graphs()
         else:
             self.graph_runner = None
             self.cuda_graph_mem_usage = 0
@@ -1416,6 +1426,29 @@ class ModelRunner:
         else:
             self.attn_backend = self._get_attention_backend()
 
+    def init_piecewise_graph(self):
+        """Compile piecewise graph."""
+        self.graph_runner = None
+
+        if not self.is_generation:
+            return
+
+        if not self.server_args.enable_piecewise_graph:
+            print(f"ModelRunner::init_piecewise_graph: disabled")
+            return
+
+        tic = time.perf_counter()
+        before_mem = get_available_gpu_memory(self.device, self.gpu_id)
+        logger.info(
+            f"Capture piecewise graph begin. This can take up to several minutes. avail mem={before_mem:.2f} GB"
+        )
+        self.graph_runner = PiecewiseGraphRunner(self, self.server_args.compilation_config)
+        after_mem = get_available_gpu_memory(self.device, self.gpu_id)
+        logger.info(
+            f"Capture piecewise graph end. Time elapsed: {time.perf_counter() - tic:.2f} s. "
+            f"mem usage={(before_mem - after_mem):.2f} GB. avail mem={after_mem:.2f} GB."
+        )
+
     def _get_attention_backend(self):
         """Init attention kernel backend."""
         self.decode_attention_backend_str = (
@@ -1652,8 +1685,9 @@ class ModelRunner:
         skip_attn_backend_init: bool = False,
         pp_proxy_tensors=None,
     ) -> LogitsProcessorOutput:
-        if not skip_attn_backend_init:
-            self.attn_backend.init_forward_metadata(forward_batch)
+        # TODO: uncomment here
+        # if not skip_attn_backend_init:
+        #     self.attn_backend.init_forward_metadata(forward_batch)
         # FIXME: add pp_proxy_tensors arg to all models
         kwargs = {}
         if self.support_pp:
@@ -1732,6 +1766,7 @@ class ModelRunner:
     ) -> Tuple[Union[LogitsProcessorOutput, PPProxyTensors], bool]:
         self.forward_pass_id += 1
 
+        # print(f"ModelRunner::forward: started", flush=True)
         with get_global_expert_distribution_recorder().with_forward_pass(
             self.forward_pass_id,
             forward_batch,
@@ -1743,6 +1778,7 @@ class ModelRunner:
                 reinit_attn_backend,
                 split_forward_count,
             )
+        # print(f"ModelRunner::forward: stopped", flush=True)
 
         if self.eplb_manager is not None:
             self.eplb_manager.on_forward_pass_end()
@@ -1762,6 +1798,7 @@ class ModelRunner:
             and self.graph_runner
             and self.graph_runner.can_run(forward_batch)
         )
+        # print(f"ModelRunner::_forward_raw: can_run_cuda_graph={can_run_cuda_graph}, self.graph_runner={type(self.graph_runner)}")
         if can_run_cuda_graph:
             ret = self.graph_runner.replay(
                 forward_batch,
@@ -1770,29 +1807,36 @@ class ModelRunner:
             )
             return ret, can_run_cuda_graph
 
+        # pid = os.getpid()
+        # tid = threading.get_ident()
+
         # For MLP sync
         if forward_batch.global_num_tokens_cpu is not None:
             forward_batch.prepare_mlp_sync_batch(self)
 
         if forward_batch.forward_mode.is_decode():
+            # print(f"ModelRunner::_forward_raw: self={hex(id(self))}, pid={pid}, tid={tid}: self.forward_decode: forward_batch.batch_size={forward_batch.batch_size}", flush=True)
             ret = self.forward_decode(
                 forward_batch,
                 skip_attn_backend_init=skip_attn_backend_init,
                 pp_proxy_tensors=pp_proxy_tensors,
             )
         elif forward_batch.forward_mode.is_extend():
+            # print(f"ModelRunner::_forward_raw: self={hex(id(self))}, pid={pid}, tid={tid}: self.forward_extend: forward_batch.batch_size={forward_batch.batch_size}", flush=True)
             ret = self.forward_extend(
                 forward_batch,
                 skip_attn_backend_init=skip_attn_backend_init,
                 pp_proxy_tensors=pp_proxy_tensors,
             )
         elif forward_batch.forward_mode.is_split_prefill():
+            # print(f"ModelRunner::_forward_raw: self={hex(id(self))}, pid={pid}, tid={tid}: self.forward_split_prefill: forward_batch.batch_size={forward_batch.batch_size}", flush=True)
             ret = self.forward_split_prefill(
                 forward_batch,
                 reinit_attn_backend=reinit_attn_backend,
                 forward_count=split_forward_count,
             )
         elif forward_batch.forward_mode.is_idle():
+            # print(f"ModelRunner::_forward_raw: self={hex(id(self))}, pid={pid}, tid={tid}: self.forward_idle: forward_batch.batch_size={forward_batch.batch_size}", flush=True)
             ret = self.forward_idle(forward_batch, pp_proxy_tensors=pp_proxy_tensors)
         else:
             raise ValueError(f"Invalid forward mode: {forward_batch.forward_mode}")

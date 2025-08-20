@@ -1452,7 +1452,7 @@ class Scheduler(
             self.tree_cache.cache_unfinished_req(self.chunked_req)
             # chunked request keeps its rid but will get a new req_pool_idx
             self.req_to_token_pool.free(self.chunked_req.req_pool_idx)
-        if self.last_batch and self.last_batch.forward_mode.is_extend():
+        if self.last_batch and ForwardMode.is_extend(self.last_batch.forward_mode):
             if self.last_batch.chunked_req is not None:
                 # In the context pipeline parallelism, after the last chunk, the current microbatch still track outdated chunked_req.
                 # We need to discard it.
@@ -1792,15 +1792,15 @@ class Scheduler(
         result: Union[GenerationBatchResult, EmbeddingBatchResult],
         launch_done: Optional[threading.Event] = None,
     ):
-        if batch.forward_mode.is_decode():
+        if ForwardMode.is_decode(batch.forward_mode):
             self.process_batch_result_decode(batch, result, launch_done)
-        elif batch.forward_mode.is_extend():
+        elif ForwardMode.is_extend(batch.forward_mode):
             self.process_batch_result_prefill(batch, result, launch_done)
-        elif batch.forward_mode.is_idle():
+        elif ForwardMode.is_idle(batch.forward_mode):
             if self.enable_overlap:
                 self.tp_worker.resolve_last_batch_result(launch_done)
                 self.set_next_batch_sampling_info_done(batch)
-        elif batch.forward_mode.is_dummy_first():
+        elif ForwardMode.is_dummy_first(batch.forward_mode.is_dummy_first):
             self.set_next_batch_sampling_info_done(batch)
 
         self.maybe_send_health_check_signal()
@@ -1932,7 +1932,7 @@ class Scheduler(
         if local_batch is None:
             num_tokens = 0
             num_tokens_for_logprob = 0
-        elif local_batch.forward_mode.is_decode():
+        elif ForwardMode.is_decode(local_batch.forward_mode):
             num_tokens = local_batch.batch_size()
             num_tokens_for_logprob = num_tokens
         else:
@@ -1947,13 +1947,13 @@ class Scheduler(
                 ]
             )
 
-        if local_batch is None or local_batch.forward_mode.is_decode_or_idle():
+        if local_batch is None or ForwardMode.is_decode_or_idle(local_batch.forward_mode):
             can_cuda_graph = 1
         else:
             can_cuda_graph = 0
 
         is_extend_in_batch = (
-            local_batch.forward_mode.is_extend() if local_batch else False
+            ForwardMode.is_extend(local_batch.forward_mode) if local_batch else False
         )
 
         tbo_preparer = TboDPAttentionPreparer()
