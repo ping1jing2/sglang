@@ -19,7 +19,7 @@ from sglang.srt.managers.schedule_batch import (
     global_server_args_dict,
 )
 from sglang.srt.mem_cache.multimodal_cache import MultiModalCache
-from sglang.srt.model_executor.forward_batch_info import ForwardBatch
+from sglang.srt.model_executor.forward_batch_info import ForwardBatch, ForwardMode
 from sglang.srt.utils import flatten_nested_list, print_warning_once
 from sglang.utils import logger
 
@@ -624,7 +624,7 @@ def general_mm_embed_routine(
     assert hasattr(language_model, "get_input_embeddings")
     embed_tokens = language_model.get_input_embeddings()
     if (
-        not forward_batch.forward_mode.is_decode()
+        not ForwardMode.is_decode(forward_batch.forward_mode)
         and forward_batch.contains_mm_inputs()
     ):
         mm_inputs_list = [

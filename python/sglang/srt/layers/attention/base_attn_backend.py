@@ -5,9 +5,10 @@ from typing import TYPE_CHECKING, Optional, Union
 
 import torch
 
+from sglang.srt.model_executor.forward_batch_info import ForwardMode
 if TYPE_CHECKING:
     from sglang.srt.layers.radix_attention import RadixAttention
-    from sglang.srt.model_executor.forward_batch_info import ForwardBatch, ForwardMode
+    from sglang.srt.model_executor.forward_batch_info import ForwardBatch
     from sglang.srt.speculative.eagle_utils import EagleDraftInput, EagleVerifyInput
 
 
@@ -65,9 +66,9 @@ class AttentionBackend(ABC):
         **kwargs,
     ):
         """Run forward on an attention layer."""
-        if forward_batch.forward_mode.is_idle():
+        if ForwardMode.is_idle(forward_batch.forward_mode):
             return q.new_empty(q.shape[0], layer.tp_q_head_num * layer.v_head_dim)
-        elif forward_batch.forward_mode.is_decode():
+        elif ForwardMode.is_decode(forward_batch.forward_mode):
             return self.forward_decode(
                 q,
                 k,

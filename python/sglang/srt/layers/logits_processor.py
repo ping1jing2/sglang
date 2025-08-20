@@ -122,9 +122,9 @@ class LogitsMetadata:
     @classmethod
     def from_forward_batch(cls, forward_batch: ForwardBatch):
         if (
-            forward_batch.forward_mode.is_extend()
+            ForwardMode.is_extend(forward_batch.forward_mode)
             and forward_batch.return_logprob
-            and not forward_batch.forward_mode.is_target_verify()
+            and not ForwardMode.is_target_verify(forward_batch.forward_mode)
         ):
             extend_return_top_logprob = any(
                 x > 0 for x in forward_batch.top_logprobs_nums
@@ -246,8 +246,8 @@ class LogitsProcessor(nn.Module):
             logits_metadata = LogitsMetadata.from_forward_batch(logits_metadata)
         # Get the last hidden states and last logits for the next token prediction
         if (
-            logits_metadata.forward_mode.is_decode_or_idle()
-            or logits_metadata.forward_mode.is_target_verify()
+            ForwardMode.is_decode_or_idle(logits_metadata.forward_mode)
+            or ForwardMode.is_target_verify(logits_metadata.forward_mode)
         ):
             pruned_states = hidden_states
             if aux_hidden_states is not None:
@@ -255,7 +255,7 @@ class LogitsProcessor(nn.Module):
             sample_indices = None
             input_logprob_indices = None
         elif (
-            logits_metadata.forward_mode.is_extend()
+            ForwardMode.is_extend(logits_metadata.forward_mode)
             and not logits_metadata.extend_return_logprob
         ):
             # Prefill without input logprobs.
@@ -339,14 +339,14 @@ class LogitsProcessor(nn.Module):
             dump_to_file(self.debug_tensor_dump_output_folder, "logits", full_logits)
 
         hidden_states_to_store: Optional[torch.Tensor] = None
-        if logits_metadata.capture_hidden_mode.need_capture():
-            if logits_metadata.capture_hidden_mode.is_full():
+        if CaptureHiddenMode.need_capture(logits_metadata.capture_hidden_mode):
+            if CaptureHiddenMode.is_full(logits_metadata.capture_hidden_mode):
                 if aux_hidden_states is not None:
                     aux_hidden_states = torch.cat(aux_hidden_states, dim=-1)
                     hidden_states_to_store = aux_hidden_states
                 else:
                     hidden_states_to_store = hidden_states
-            elif logits_metadata.capture_hidden_mode.is_last():
+            elif CaptureHiddenMode.is_last(logits_metadata.capture_hidden_mode):
                 # Get the last token hidden states. If sample_indices is None,
                 # pruned states only contain the last tokens already.
                 if aux_hidden_states is not None:
