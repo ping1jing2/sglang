@@ -23,6 +23,8 @@ import torch
 from sglang.srt.model_executor.compilation.config import CompilationConfig
 from sglang.srt.model_executor.compilation.compilation_context import CompilationContext
 
+from torch._dynamo.eval_frame import DisableContext
+
 from sglang.srt.distributed import (
     get_pp_group,
     get_tensor_model_parallel_rank,
@@ -123,7 +125,7 @@ class NpuBackend:
         self.model_config = model_runner.model.config
 
         self.compilation_config = compilation_config
-        self.page_size = page_size        
+        self.page_size = page_size
         self.compilation_context = compilation_context
 
         self.split_gm = None
@@ -140,6 +142,8 @@ class NpuBackend:
         if example_inputs_len in self.callables:
             callable = self.callables[example_inputs_len]
             return callable
+
+        DisableContext.compiled_function_args = example_inputs
 
         self.graph = graph
         self.split_gm, self.piecewise_graphs = NpuBackend.split_graph(self.graph, self.compilation_config.splitting_ops)
