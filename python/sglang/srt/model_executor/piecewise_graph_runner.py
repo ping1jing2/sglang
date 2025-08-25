@@ -46,7 +46,6 @@ from sglang.srt.utils import (
 )
 
 from sglang.srt.model_executor.compilation.npu_graph_compiler import NpuGraphCompiler
-# from sglang.srt.model_executor.compilation.npu_compiler_backend import replay_index
 from sglang.srt.model_executor.compilation.config import CompilationConfig
 from sglang.srt.model_executor.compilation.compilation_context import CompilationContext
 
@@ -54,9 +53,18 @@ from sglang.srt.layers.attention.ascend_backend import AscendAttnBackend
 import traceback
 
 
-# from torch._dynamo.eval_frame import compiled_function, compiled_function_args, compiled_function_kwargs, was_captured
+from sglang.srt.model_executor.dynamo import (
+    patch_dynamo_context,
+    patch_dynamo_context_call,
+    restore_dynamo_context_call,
+    patch_last_context,
+    restore_last_context,
+    capture_mode,
+    wrapped_fn
+)
 
-from sglang.srt.model_executor.dynamo import patch_dynamo_context, patch_dynamo_context_call, restore_dynamo_context_call
+import functools
+
 import torch._dynamo.config
 torch._dynamo.config.skip_nnmodule_hook_guards = True
 torch._dynamo.config.automatic_dynamic_shapes = False
@@ -204,16 +212,6 @@ def get_batch_sizes_to_capture(model_runner: ModelRunner):
         else []
     )
 
-    # TODO: debug only: speed up compilation
-    # available_bs = [128]
-    # capture_bs = [item for item in capture_bs if item in available_bs]
-    # compile_bs = [item for item in compile_bs if item in available_bs]
-
-    # torch.set_printoptions(linewidth=200)
-
-    capture_bs = [128]
-    compile_bs = [128]
-
     return capture_bs, compile_bs
 
 
@@ -221,8 +219,6 @@ class PiecewiseGraphRunner:
     """A PiecewiseGraphRunner runs the forward pass of a model with npu graph and torch.compile."""
 
     def __init__(self, model_runner: ModelRunner, compilation_config: CompilationConfig):
-        print(f"PiecewiseGraphRunner::__init__: self={hex(id(self))}", flush=True)
-
         patch_dynamo_context()
 
         self.inference_counter = 1
@@ -529,35 +525,26 @@ class PiecewiseGraphRunner:
 
         forward_batch = self.init_forward_batch(bs, attn_backend, forward_batch_)
 
-        # pid = os.getpid()
-        # tid = threading.get_ident()
-        # print(f"PiecewiseGraphRunner::capture_one_batch_size: self={hex(id(self))}, pid={pid}, tid={tid}: 1", flush=True)
-
-
-        # self.compilation_context.stream = torch.npu.current_stream()
-
-        # with graph_capture() as graph_capture_context:
-        # if True:
-        # self.compilation_context.stream = graph_capture_context.stream
         self.compilation_context.stream = self.stream
 
         compiler = NpuGraphCompiler(self.model_runner, self.model_runner.model, self.compilation_config, self.compilation_context, self.model_runner.page_size)
-        # print(f"PiecewiseGraphRunner::capture_one_batch_size: self={hex(id(self))}, pid={pid}, tid={tid}: 2", flush=True)
-        logits_output_or_pp_proxy_tensors = compiler.compiled_callable(forward_batch.input_ids, forward_batch.positions, forward_batch)
-        # print(f"PiecewiseGraphRunner::capture_one_batch_size: self={hex(id(self))}, pid={pid}, tid={tid}: 3", flush=True)
 
-
-        # print(f"PiecewiseGraphRunner::capture_one_batch_size: self={hex(id(self))}, pid={pid}, tid={tid}: 4", flush=True)
-
-        torch._dynamo.eval_frame.was_captured = True
         patch_dynamo_context_call()
 
+        logits_output_or_pp_proxy_tensors = compiler.compiled_callable(forward_batch.input_ids, forward_batch.positions, forward_batch)
+
+        capture_mode = True
         execution_contexts = DisableContext.execution_contexts
+        patch_last_context()
         try:
             logits_output_or_pp_proxy_tensors = compiler.compiled_callable(forward_batch.input_ids, forward_batch.positions, forward_batch)
         finally:
-            torch._dynamo.eval_frame.was_captured = False
+            capture_mode = False
+            restore_last_context()
             restore_dynamo_context_call()
+
+        assert DisableContext.compiled_function
+        assert DisableContext.compiled_function_args
 
         if self.ident in execution_contexts:
             self.execution_context = execution_contexts[self.ident]
@@ -566,8 +553,6 @@ class PiecewiseGraphRunner:
 
         torch._dynamo.reset()
         gc.collect()
-
-        # print(f"PiecewiseGraphRunner::capture_one_batch_size: self={hex(id(self))}, pid={pid}, tid={tid}: 5", flush=True)
 
         return (compiled_graph, logits_output_or_pp_proxy_tensors)
 
@@ -662,19 +647,6 @@ class PiecewiseGraphRunner:
         skip_attn_backend_init: bool = False,
         pp_proxy_tensors: Optional[PPProxyTensors] = None,
     ) -> Union[LogitsProcessorOutput, PPProxyTensors]:
-        # pid = os.getpid()
-        # tid = threading.get_ident()
-        # print(f"PiecewiseGraphRunner::replay: self={hex(id(self))}, pid={pid}, tid={tid}", flush=True)
-
-        # import traceback
-        # traceback.print_stack()
-
-        # output_file = "/data/eshogulin/projects/sglang/test/srt/tracing/20250806/test_ascend_attention_backend_20250806_01.llama.piecewise.bs_128." + str(hex(id(self))) + "." + str(self.inference_counter).zfill(5) + ".html"
-        # tracer = VizTracer()
-        # tracer.start()
-
-        # torch.nn.modules.module.was_captured = True
-
         self.replay_prepare(forward_batch, pp_proxy_tensors)
         compiled_graph = self.graphs[self.bs]
 
@@ -699,69 +671,9 @@ class PiecewiseGraphRunner:
 
         init()
 
-        # compiled_graph: CompiledGraph = self.graphs[self.bs]
+        DisableContext.compiled_function(*DisableContext.compiled_function_args)
 
-        # def call1():
-        #     # with torch._dynamo.skip_guard_eval_unsafe():
-        #     #     output = compiled_graph.callable(forward_batch.input_ids, forward_batch.positions, forward_batch)
-        #     output = compiled_graph.callable(forward_batch.input_ids, forward_batch.positions, forward_batch)
-        #     return output
-
-        # @torch._dynamo.skip_guard_eval_unsafe
-        # def call2():
-        #     # with torch._dynamo.skip_guard_eval_unsafe():
-        #     #     output = compiled_graph.callable(forward_batch.input_ids, forward_batch.positions, forward_batch)
-        #     output = compiled_graph.callable(forward_batch.input_ids, forward_batch.positions, forward_batch)
-        #     return output
-
-        # output = call2() if self.inference_counter > 1 else call1()
-
-        # global compiled_function
-        # global compiled_function_args
-        # global compiled_function_kwargs
-
-        # if not self.execution_context:
-        #     execution_contexts = torch._dynamo.eval_frame.execution_contexts
-        #     print(f"PiecewiseGraphRunner::replay: self={hex(id(self))}, ident={ident}: execution contexts len={len(execution_contexts)}", flush=True)
-
-        #     if ident in execution_contexts:
-        #         self.execution_context = execution_contexts[ident]
-        #         print(f"PiecewiseGraphRunner::replay: self={hex(id(self))}, ident={ident}, self.execution_context={hex(id(self.execution_context))}: execution context was initialized", flush=True)
-
-        # if self.inference_counter <= 2:
-        #     execution_contexts = torch._dynamo.eval_frame.execution_contexts
-        #     if self.ident in execution_contexts:
-        #         self.execution_context = execution_contexts[self.ident]
-
-
-
-        # with self.compilation_context.stream:
-
-        DisableContext.compiled_function(
-            *DisableContext.compiled_function_args,
-            **DisableContext.compiled_function_kwargs)
-
-        # print(f"PiecewiseGraphRunner::replay: self={hex(id(self))}, ident={self.ident}, self.inference_counter={self.inference_counter}: TorchDynamoContext execution self.execution_context={hex(id(self.execution_context))}: 2", flush=True)
         output = self.output_buffers[self.bs]
-
-        # # print(f"PiecewiseGraphRunner::replay: self.execution_context={(True if self.execution_context else False)}, self.execution_context.compiled_function={True if self.execution_context.compiled_function else False}", flush=True)
-        # if self.execution_context and self.execution_context.compiled_function:
-        #     # print(f"PiecewiseGraphRunner::replay: self={hex(id(self))}, ident={self.ident}, self.inference_counter={self.inference_counter}: TorchDynamoContext execution self.execution_context={hex(id(self.execution_context))}: 1", flush=True)
-        #     self.execution_context.compiled_function(
-        #         *self.execution_context.compiled_function_args,
-        #         **self.execution_context.compiled_function_kwargs)
-        #     # print(f"PiecewiseGraphRunner::replay: self={hex(id(self))}, ident={self.ident}, self.inference_counter={self.inference_counter}: TorchDynamoContext execution self.execution_context={hex(id(self.execution_context))}: 2", flush=True)
-        #     output = self.output_buffers[self.bs]
-        # else:
-        #     print(f"PiecewiseGraphRunner::replay: self={hex(id(self))}, ident={self.ident}, self.inference_counter={self.inference_counter}: compiled_graph callable execution: 1", flush=True)
-        #     output = compiled_graph.callable(forward_batch.input_ids, forward_batch.positions, forward_batch)
-        #     print(f"PiecewiseGraphRunner::replay: self={hex(id(self))}, ident={self.ident}, self.inference_counter={self.inference_counter}: compiled_graph callable execution: 2", flush=True)
-        #     self.output_buffers[self.bs] = output
-
-        # output = compiled_graph.callable(forward_batch.input_ids, forward_batch.positions, forward_batch)
-        # self.output_buffers[self.bs] = output
-
-        # self.compilation_config.replay_index += 1
 
         if isinstance(output, LogitsProcessorOutput):
             result = LogitsProcessorOutput(
@@ -775,23 +687,6 @@ class PiecewiseGraphRunner:
         else:
             assert isinstance(output, PPProxyTensors)
             result = PPProxyTensors({k: v[: self.bs] for k, v in output.tensors.items()})
-
-
-        # if self.execution_context:
-        #     # torch._dynamo.eval_frame.was_captured = True
-        #     self.execution_context.was_captured = True
-        #     # print(f"PiecewiseGraphRunner::replay: self={hex(id(self))}, ident={ident}, self.execution_context={hex(id(self.execution_context))}: self.execution_context.was_captured={self.execution_context.was_captured}", flush=True)
-
-        # tracer.stop()
-        # tracer.save(output_file=output_file)
-        # self.inference_counter += 1
-
-        # TODO: per branch
-        # TODO: uncomment: hande different threads
-        # _stance.skip_guard_eval_unsafe = True
-        torch._dynamo.config.skip_nnmodule_hook_guards = True
-        torch._dynamo.config.skip_no_tensor_aliasing_guards_on_parameters = True
-        # print(f"PiecewiseGraphRunner::replay: _stance={hex(id(self))}", flush=True)
 
         return result
 
