@@ -26,34 +26,18 @@ import torch
 
 import functools
 import inspect
-from torch._dynamo.eval_frame import (
-    _TorchDynamoContext,
-    _stance,
-    DisableContext,
-    innermost_fn,
-    _maybe_set_eval_frame,
-    _callback_from_stance,
-    _is_skip_guard_eval_unsafe_stance)
-from torch._dynamo.decorators import (
-    skip)
-from torch._C._dynamo.eval_frame import set_skip_guard_eval_unsafe
-
+from torch._dynamo.eval_frame import DisableContext, innermost_fn
+from torch._dynamo.decorators import skip
 
 def patch_dynamo_context():
-    setattr(torch._dynamo.eval_frame.DisableContext, "execution_contexts", None)
+    setattr(torch._dynamo.eval_frame.DisableContext, "execution_contexts", {})
     setattr(torch._dynamo.eval_frame.DisableContext, "compiled_function_args", None)
-    setattr(torch._dynamo.eval_frame.DisableContext, "compiled_function_kwargs", None)
     setattr(torch._dynamo.eval_frame.DisableContext, "compiled_function", None)
 
-    torch._dynamo.eval_frame.DisableContext.execution_contexts = {}
+    # torch._dynamo.eval_frame.DisableContext.execution_contexts = {}
 
-# use context manager
 original_disable_context_call = None
 original_disable = None
-last_context = None
-last_context_call_original = None
-wrapped_fn = None
-capture_mode = False
 
 def decorators_disable(fn=None, recursive=True):
     """
@@ -71,19 +55,7 @@ def decorators_disable(fn=None, recursive=True):
             assert callable(fn)
 
             DisableContext.compiled_function = fn
-
-            context = DisableContext()
-            context_fn = context(fn)
-
-            context_fn._torchdynamo_disable = True
-
-            global wrapped_fn
-            wrapped_fn = context_fn
-
-            global last_context
-            last_context = context
-
-            return context_fn
+            return DisableContext()(fn)
         return DisableContext()
     else:
         return skip(fn)
@@ -98,13 +70,3 @@ def restore_dynamo_context_call():
     global original_disable
     torch._dynamo.decorators.disable = original_disable
     original_disable = None
-
-def patch_last_context():
-    pass
-
-def restore_last_context():
-    global last_context
-    global last_context_call_original
-    last_context.__call__ = last_context_call_original
-    last_context_call_original = None
-    last_context = None
