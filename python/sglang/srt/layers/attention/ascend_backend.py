@@ -18,6 +18,9 @@ if TYPE_CHECKING:
     from sglang.srt.model_executor.model_runner import ModelRunner
 
 
+import os
+import threading
+
 @dataclass
 class ForwardMetadata:
 
@@ -66,6 +69,9 @@ class AscendAttnBackend(AttentionBackend):
         self.req_to_token = model_runner.req_to_token_pool.req_to_token
         self.graph_mode = False
 
+        # TODO: debug only
+        # self.block_tables = torch.zeros((4,1), dtype=torch.int32, device="npu")
+
     def init_forward_metadata(self, forward_batch: ForwardBatch):
         """Init the metadata for a forward pass."""
         self.forward_metadata = ForwardMetadata()
@@ -76,6 +82,11 @@ class AscendAttnBackend(AttentionBackend):
             ][:, :: self.page_size]
             // self.page_size
         )
+
+        # we need the same pointer
+        # self.block_tables.copy_(self.forward_metadata.block_tables)
+        # self.forward_metadata.block_tables = self.block_tables
+
         if forward_batch.extend_seq_lens is not None:
             self.forward_metadata.extend_seq_lens_cpu_int = (
                 forward_batch.extend_seq_lens.cpu().int()
@@ -83,6 +94,16 @@ class AscendAttnBackend(AttentionBackend):
         self.forward_metadata.seq_lens_cpu_int = forward_batch.seq_lens_cpu.int()
 
         self.graph_mode = False
+
+        # print("", flush=True)
+
+        # pid = os.getpid()
+        # tid = threading.get_ident()
+        # print(f"AscendAttnBackend::init_forward_metadata: pid={pid}, tid={tid}", flush=True)
+
+        # import traceback
+        # traceback.print_stack()
+        # print("", flush=True)
 
     def init_cuda_graph_state(self, max_bs: int, max_num_tokens: int):
         self.graph_metadata = {
@@ -323,6 +344,14 @@ class AscendAttnBackend(AttentionBackend):
                     dtype=query.dtype,
                     device=query.device,
                 )
+
+                if torch.compiler.is_dynamo_compiling():
+                    # fake source code to extract into separate submodule in compiler backend
+                    # ideally we need to develop torch.fx transformation
+                    forward_batch.req_to_token_pool.req_to_token.add_(forward_batch.req_to_token_pool.req_to_token)
+                    forward_batch.req_pool_indices.add_(forward_batch.req_pool_indices)
+                    forward_batch.seq_lens.add_(forward_batch.seq_lens)
+                    # self.forward_metadata.block_tables.add_(self.forward_metadata.block_tables)
 
                 torch_npu._npu_paged_attention(
                     query=query,

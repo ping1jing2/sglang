@@ -40,6 +40,9 @@ from http import HTTPStatus
 from itertools import chain
 from typing import TYPE_CHECKING, Any, List, Optional, Set, Tuple, Union
 
+import os
+import threading
+
 import numpy as np
 import torch
 import triton
@@ -829,7 +832,7 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
 
     # Batch configs
     model_config: ModelConfig = None
-    forward_mode: ForwardMode = None
+    forward_mode: int = None
     enable_overlap: bool = False
     # Tell whether the current running batch is full so that we can skip
     # the check of whether to prefill new requests.
@@ -1076,7 +1079,7 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
             else:
                 self.encoder_lens_cpu.append(im.num_image_tokens)
                 self.encoder_cached.append(
-                    self.forward_mode.is_decode()
+                    ForwardMode.is_decode(self.forward_mode)
                     or len(req.prefix_indices) >= im.num_image_tokens
                 )
 
@@ -1339,6 +1342,10 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
             self,
             self.model_config.vocab_size,
         )
+
+        # pid = os.getpid()
+        # tid = threading.get_ident()
+        # print(f"ScheduleBatch::prepare_for_extend: self={hex(id(self))}, pid={pid}, tid={tid}", flush=True)
 
     def prepare_for_split_prefill(self):
         self.prepare_for_extend()
@@ -1613,6 +1620,11 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
             (self.req_pool_indices, locs), self.out_cache_loc.to(torch.int32)
         )
 
+        # pid = os.getpid()
+        # tid = threading.get_ident()
+        # print(f"ScheduleBatch::prepare_for_decode: self={hex(id(self))}, pid={pid}, tid={tid}", flush=True)
+
+
     def filter_batch(
         self,
         chunked_req_to_exclude: Optional[Union[Req, List[Req]]] = None,
@@ -1671,6 +1683,10 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
         if self.spec_info:
             self.spec_info.filter_batch(keep_indices_device)
 
+        # pid = os.getpid()
+        # tid = threading.get_ident()
+        # print(f"ScheduleBatch::filter_batch: self={hex(id(self))}, pid={pid}, tid={tid}", flush=True)
+
     def merge_batch(self, other: "ScheduleBatch"):
         # Penalizer orchestrator must be merged before Batch.reqs is merged. This is because
         # orchestrator.merge() depends on Batch.reqs during preparation of each penalizers, so it
@@ -1714,14 +1730,14 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
     def get_model_worker_batch(
         self, seq_lens_cpu_cache: Optional[torch.Tensor] = None
     ) -> ModelWorkerBatch:
-        if self.forward_mode.is_decode_or_idle():
+        if ForwardMode.is_decode_or_idle(self.forward_mode):
             extend_seq_lens = extend_prefix_lens = extend_logprob_start_lens = None
         else:
             extend_seq_lens = self.extend_lens
             extend_prefix_lens = self.prefix_lens
             extend_logprob_start_lens = self.extend_logprob_start_lens
 
-        if self.forward_mode.is_decode_or_idle():
+        if ForwardMode.is_decode_or_idle(self.forward_mode):
             attention_backend_str = global_server_args_dict["decode_attention_backend"]
         else:
             attention_backend_str = global_server_args_dict["prefill_attention_backend"]
