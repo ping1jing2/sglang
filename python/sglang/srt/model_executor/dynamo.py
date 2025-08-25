@@ -1,4 +1,4 @@
-# Copyright 2023-2024 SGLang Team
+# Copyright 2025 SGLang Team
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -17,6 +17,7 @@ from __future__ import annotations
 import bisect
 import gc
 import os
+import threading
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Callable, Optional, Union, List
 
@@ -26,91 +27,84 @@ import torch
 import functools
 import inspect
 from torch._dynamo.eval_frame import (
+    _TorchDynamoContext,
     _stance,
     DisableContext,
     innermost_fn,
     _maybe_set_eval_frame,
     _callback_from_stance,
     _is_skip_guard_eval_unsafe_stance)
+from torch._dynamo.decorators import (
+    skip)
 from torch._C._dynamo.eval_frame import set_skip_guard_eval_unsafe
-
-
-def disable_context_call(self, fn):
-    # Earlier this code was in the base class _TorchDynamoContext. But we
-    # moved it here to have better code organization. For disable, we just
-    # want the callback to be None. We don't have to check trace_rules or
-    # create any wrapper.
-    fn = innermost_fn(fn)
-
-    if isinstance(fn, torch.nn.Module):
-        mod = fn
-        new_mod = OptimizedModule(mod, self)
-        new_mod._torchdynamo_orig_callable = mod.forward
-        return new_mod
-
-    if inspect.isclass(fn):
-        # User has wrapped the class with compile/disable decorator. Apply
-        # disable to init/call method.
-        cls_obj = fn
-        # Disable on init is useful for reconstruction of bytecodes where we
-        # want to prevent Dynamo from tracing into the init function. Check
-        # test_reconstruction in test_model_output.py.
-        cls_obj.__init__ = self(cls_obj.__init__)
-        cls_obj.__call__ = self(cls_obj.__call__)
-        if issubclass(cls_obj, torch.nn.Module):
-            # NN module variable tracker directly inlines the _call_impl. Disable it.
-            cls_obj._call_impl = self(cls_obj._call_impl)
-        return cls_obj
-
-    assert callable(fn)
-
-    @functools.wraps(fn)
-    def _fn(*args, **kwargs):
-        prior = _maybe_set_eval_frame(_callback_from_stance(self.callback))
-        prior_skip_guard_eval_unsafe = set_skip_guard_eval_unsafe(
-            _is_skip_guard_eval_unsafe_stance()
-        )
-        try:
-            if torch._dynamo.eval_frame.was_captured:
-                # global execution_contexts
-                DisableContext.execution_contexts[self.ident] = self
-
-
-                if True:
-                    # initialization order is important to avoid synchronization
-                    DisableContext.compiled_function_args = args
-                    DisableContext.compiled_function_kwargs = kwargs
-                    DisableContext.compiled_function = fn
-                    result = fn(*args, **kwargs)
-                    return result
-
-            return fn(*args, **kwargs)
-        finally:
-            _maybe_set_eval_frame(prior)
-            set_skip_guard_eval_unsafe(prior_skip_guard_eval_unsafe)
-
-    _fn._torchdynamo_disable = True  # type: ignore[attr-defined]
-
-    # Save the function pointer to find the original callable while nesting
-    # of decorators.
-    _fn._torchdynamo_orig_callable = fn  # type: ignore[attr-defined]
-
-    return _fn
 
 
 def patch_dynamo_context():
     setattr(torch._dynamo.eval_frame.DisableContext, "execution_contexts", None)
+    setattr(torch._dynamo.eval_frame.DisableContext, "compiled_function_args", None)
+    setattr(torch._dynamo.eval_frame.DisableContext, "compiled_function_kwargs", None)
+    setattr(torch._dynamo.eval_frame.DisableContext, "compiled_function", None)
+
     torch._dynamo.eval_frame.DisableContext.execution_contexts = {}
 
 # use context manager
 original_disable_context_call = None
+original_disable = None
+last_context = None
+last_context_call_original = None
+wrapped_fn = None
+capture_mode = False
+
+def decorators_disable(fn=None, recursive=True):
+    """
+    Decorator to disable TorchDynamo
+
+    If recursive=True, Dynamo is completely skipped on the decorated function
+    frame as well as the recursively invoked functions.
+
+    If recursive=False, Dynamo skips frames associated with the function code,
+    but still process recursively invoked frames.
+    """
+    if recursive:
+        if fn is not None:
+            fn = innermost_fn(fn)
+            assert callable(fn)
+
+            DisableContext.compiled_function = fn
+
+            context = DisableContext()
+            context_fn = context(fn)
+
+            context_fn._torchdynamo_disable = True
+
+            global wrapped_fn
+            wrapped_fn = context_fn
+
+            global last_context
+            last_context = context
+
+            return context_fn
+        return DisableContext()
+    else:
+        return skip(fn)
+
 
 def patch_dynamo_context_call():
-    global original_disable_context_call
-    original_disable_context_call = torch._dynamo.eval_frame.DisableContext.__call__
-    torch._dynamo.eval_frame.DisableContext.__call__ = disable_context_call
+    global original_disable
+    original_disable = torch._dynamo.decorators.disable
+    torch._dynamo.decorators.disable = decorators_disable
 
 def restore_dynamo_context_call():
-    global original_disable_context_call
-    torch._dynamo.eval_frame.DisableContext.__call__ = original_disable_context_call
-    original_disable_context_call = None
+    global original_disable
+    torch._dynamo.decorators.disable = original_disable
+    original_disable = None
+
+def patch_last_context():
+    pass
+
+def restore_last_context():
+    global last_context
+    global last_context_call_original
+    last_context.__call__ = last_context_call_original
+    last_context_call_original = None
+    last_context = None
