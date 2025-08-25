@@ -1,4 +1,4 @@
-# Copyright 2023-2024 SGLang Team
+# Copyright 2025 SGLang Team
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -52,15 +52,10 @@ from sglang.srt.model_executor.compilation.compilation_context import Compilatio
 from sglang.srt.layers.attention.ascend_backend import AscendAttnBackend
 import traceback
 
-
 from sglang.srt.model_executor.dynamo import (
     patch_dynamo_context,
     patch_dynamo_context_call,
-    restore_dynamo_context_call,
-    patch_last_context,
-    restore_last_context,
-    capture_mode,
-    wrapped_fn
+    restore_dynamo_context_call
 )
 
 import functools
@@ -81,7 +76,6 @@ if TYPE_CHECKING:
 
 from sglang.srt.model_executor.graph_runner import get_is_capture_mode, model_capture_mode
 
-# from viztracer import VizTracer
 torch.cuda.CUDAGraph = torch.npu.NPUGraph
 torch.cuda.synchronize = torch.npu.synchronize
 torch.cuda.graph = torch.npu.graph
@@ -533,14 +527,10 @@ class PiecewiseGraphRunner:
 
         logits_output_or_pp_proxy_tensors = compiler.compiled_callable(forward_batch.input_ids, forward_batch.positions, forward_batch)
 
-        capture_mode = True
         execution_contexts = DisableContext.execution_contexts
-        patch_last_context()
         try:
             logits_output_or_pp_proxy_tensors = compiler.compiled_callable(forward_batch.input_ids, forward_batch.positions, forward_batch)
         finally:
-            capture_mode = False
-            restore_last_context()
             restore_dynamo_context_call()
 
         assert DisableContext.compiled_function
