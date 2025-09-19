@@ -1034,7 +1034,7 @@ class MRotaryEmbedding(RotaryEmbedding):
                 )
 
     @torch.compile(dynamic=True, backend=get_compiler_backend())
-    def forward(
+    def forward_native(
         self,
         positions: torch.Tensor,
         query: torch.Tensor,
@@ -1080,6 +1080,28 @@ class MRotaryEmbedding(RotaryEmbedding):
         key_rot = _apply_rotary_emb(key_rot, cos, sin, self.is_neox_style)
         key = torch.cat((key_rot, key_pass), dim=-1).reshape(key_shape)
         return query, key
+
+    def forward_npu(
+        self,
+        positions: torch.Tensor,
+        query: torch.Tensor,
+        key: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        rotary_mode = "half"
+        if self.is_neox_style:
+            rotary_mode = "half"
+        else:
+            rotary_mode = "interleave"
+        query_out, key_out = torch_npu.npu_mrope(
+            positions,
+            query,
+            key,
+            self.cos_sin_cache,
+            self.head_size,
+            mrope_section=self.mrope_section,
+            rotary_mode=rotary_mode,
+        )
+        return query_out, key_out
 
     # Copied from https://github.com/huggingface/transformers/blob/c8e0e603de9b3d49161a15fe6e8ea84badfb5d02/src/transformers/models/qwen2_vl/modeling_qwen2_vl.py#L1439
     @staticmethod
