@@ -77,7 +77,7 @@ def main(args):
 
     @sgl.lang.api.function
     def few_shot_ceval(s, examples, question):
-        s += examples + question + sgl.gen("Answer")
+        s += examples + question + sgl.lang.api.gen("Answer")
 
     #####################################
     ########## SGL Program End ##########

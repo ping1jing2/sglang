@@ -57,7 +57,7 @@ def main(args):
     @sgl.lang.api.function
     def few_shot_boolq(s, question):
         s += few_shots + question
-        s += sgl.gen("answer", max_tokens=5, stop=["\n"])
+        s += sgl.lang.api.gen("answer", max_tokens=5, stop=["\n"])
 
     #####################################
     ########## SGL Program End ##########
