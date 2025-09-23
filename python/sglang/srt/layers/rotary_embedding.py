@@ -1040,7 +1040,7 @@ class MRotaryEmbedding(RotaryEmbedding):
                 )
 
     @torch.compile(dynamic=True, backend=get_compiler_backend())
-    def forward(
+    def forward_native(
         self,
         positions: torch.Tensor,
         query: torch.Tensor,
