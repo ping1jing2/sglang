@@ -1098,7 +1098,7 @@ class MRotaryEmbedding(RotaryEmbedding):
             key,
             self.cos_sin_cache,
             self.head_size,
-            mrope_section=self.mrope_section,
+            mrope_section=[0, 0, 0],
             rotary_mode=rotary_mode,
         )
         return query_out, key_out
