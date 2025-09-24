@@ -1093,7 +1093,7 @@ class MRotaryEmbedding(RotaryEmbedding):
         query: torch.Tensor,
         key: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        if query.shape[1] * query.shape[2] > 4096:
+        if query.shape[1] > 4096:
             return self.forward_native(positions, query, key)
         rotary_mode = "half"
         if self.is_neox_style:
