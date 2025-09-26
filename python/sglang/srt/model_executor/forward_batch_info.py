@@ -580,9 +580,17 @@ class ForwardBatch:
                         device=model_runner.device,
                     )
                 else:
-                    mrope_position_deltas = mm_input.mrope_position_delta.flatten().to(
-                        model_runner.device, non_blocking=True
-                    )
+                    if _is_npu:
+                        # transfer mrope_position_delta to device when the first running,
+                        # avoiding successvie host-to-device data transfer
+                        mm_input.mrope_position_delta = mm_input.mrope_position_delta.to(
+                            model_runner.device, non_blocking=True
+                        )
+                        mrope_position_deltas = mm_input.mrope_position_delta.flatten()
+                    else:
+                        mrope_position_deltas = mm_input.mrope_position_delta.flatten().to(
+                            model_runner.device, non_blocking=True
+                        )
                     mrope_positions_list[batch_idx] = (
                         (mrope_position_deltas + self.seq_lens[batch_idx] - 1)
                         .unsqueeze(0)
