@@ -20,6 +20,7 @@ from sglang.srt.utils import (
     get_bool_env_var,
     is_cpu,
     is_hip,
+    is_npu,
     set_weight_attrs,
     use_intel_amx_backend,
 )
@@ -34,6 +35,7 @@ if TYPE_CHECKING:
 _is_cpu_amx_available = cpu_has_amx_support()
 _is_hip = is_hip()
 _is_cpu = is_cpu()
+_is_npu = is_npu()
 _use_aiter = get_bool_env_var("SGLANG_USE_AITER") and _is_hip
 
 if _use_aiter:
@@ -41,6 +43,10 @@ if _use_aiter:
     from aiter.fused_moe import fused_moe
     from aiter.ops.shuffle import shuffle_weight
 
+if _is_npu:
+    import torch_npu
+
+    NPU_FORMAT_FRACTAL_NZ = 29
 
 class UnquantizedEmbeddingMethod(QuantizeMethodBase):
     """Unquantized method for embeddings."""
@@ -214,6 +220,27 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
         if _is_cpu and _is_cpu_amx_available:
             _amx_process_weight_after_loading(layer, ["w13_weight", "w2_weight"])
 
+        if _is_npu:
+
+            free_npu_memory, total_npu_memory = torch.npu.mem_get_info()
+            used_memory_before_NZ = (total_npu_memory - free_npu_memory - initial_used_memory) / (1 << 30)
+            print(f'Used memory BEFORE NZ conversion: {used_memory_before_NZ:.2f} GB')
+    
+            for weight_name in ["w13_weight", "w2_weight"]:
+                weight = getattr(layer, weight_name)
+                weight.data = torch_npu.npu_format_cast(
+                    weight.data, NPU_FORMAT_FRACTAL_NZ
+                )
+            free_npu_memory, total_npu_memory = torch.npu.mem_get_info()
+            used_memory_before_NZ = (total_npu_memory - free_npu_memory - initial_used_memory) / (1 << 30)
+            print(f'Used memory AFTER NZ conversion: {used_memory_before_NZ:.2f} GB')
+
+            torch.npu.empty_cache()
+
+            free_npu_memory, total_npu_memory = torch.npu.mem_get_info()
+            used_memory_before_NZ = (total_npu_memory - free_npu_memory - initial_used_memory) / (1 << 30)
+            print(f'Used memory AFTER empty_cache(): {used_memory_before_NZ:.2f} GB')
+        
         return
 
     def create_moe_runner(
