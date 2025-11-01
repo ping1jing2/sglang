@@ -228,7 +228,7 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
     
             for weight_name in ["w13_weight", "w2_weight"]:
                 weight = getattr(layer, weight_name)
-                weight.data = torch_npu.npu_format_cast(
+                weight.data = torch_npu.npu_format_cast_(
                     weight.data, NPU_FORMAT_FRACTAL_NZ
                 )
             free_npu_memory, total_npu_memory = torch.npu.mem_get_info()
