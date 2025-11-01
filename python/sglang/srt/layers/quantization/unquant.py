@@ -240,6 +240,7 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
             free_npu_memory, total_npu_memory = torch.npu.mem_get_info()
             used_memory_before_NZ = (total_npu_memory - free_npu_memory) / (1 << 30)
             print(f'Used memory AFTER empty_cache(): {used_memory_before_NZ:.2f} GB')
+            print("\n----------------------------------------------------------------\n")
         
         return
 
