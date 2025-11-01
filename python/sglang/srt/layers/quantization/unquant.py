@@ -223,7 +223,7 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
         if _is_npu:
 
             free_npu_memory, total_npu_memory = torch.npu.mem_get_info()
-            used_memory_before_NZ = (total_npu_memory - free_npu_memory - initial_used_memory) / (1 << 30)
+            used_memory_before_NZ = (total_npu_memory - free_npu_memory) / (1 << 30)
             print(f'Used memory BEFORE NZ conversion: {used_memory_before_NZ:.2f} GB')
     
             for weight_name in ["w13_weight", "w2_weight"]:
@@ -232,13 +232,13 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
                     weight.data, NPU_FORMAT_FRACTAL_NZ
                 )
             free_npu_memory, total_npu_memory = torch.npu.mem_get_info()
-            used_memory_before_NZ = (total_npu_memory - free_npu_memory - initial_used_memory) / (1 << 30)
+            used_memory_before_NZ = (total_npu_memory - free_npu_memory) / (1 << 30)
             print(f'Used memory AFTER NZ conversion: {used_memory_before_NZ:.2f} GB')
 
             torch.npu.empty_cache()
 
             free_npu_memory, total_npu_memory = torch.npu.mem_get_info()
-            used_memory_before_NZ = (total_npu_memory - free_npu_memory - initial_used_memory) / (1 << 30)
+            used_memory_before_NZ = (total_npu_memory - free_npu_memory) / (1 << 30)
             print(f'Used memory AFTER empty_cache(): {used_memory_before_NZ:.2f} GB')
         
         return
