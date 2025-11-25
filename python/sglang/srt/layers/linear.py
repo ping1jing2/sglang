@@ -14,6 +14,7 @@ from sglang.srt.distributed import (
     get_tensor_model_parallel_rank,
     get_tensor_model_parallel_world_size,
     get_tp_group,
+    parallel_state,
     split_tensor_along_last_dim,
     tensor_model_parallel_all_gather,
     tensor_model_parallel_all_reduce,
@@ -300,6 +301,7 @@ class ColumnParallelLinear(LinearBase):
         tp_rank: Optional[int] = None,
         tp_size: Optional[int] = None,
         use_presharded_weights: bool = False,
+        tp_group: Optional[parallel_state.GroupCoordinator] = None,
     ):
         super().__init__(
             input_size, output_size, skip_bias_add, params_dtype, quant_config, prefix
@@ -313,7 +315,9 @@ class ColumnParallelLinear(LinearBase):
             tp_rank = get_tensor_model_parallel_rank()
         if tp_size is None:
             tp_size = get_tensor_model_parallel_world_size()
-        self.tp_rank, self.tp_size = tp_rank, tp_size
+        if tp_group is None:
+            tp_group = get_tp_group()
+        self.tp_rank, self.tp_size, self.tp_group = tp_rank, tp_size, tp_group
         assert self.quant_method is not None
         self.output_size_per_partition = divide(self.output_size, tp_size)
         self.output_partition_sizes = [self.output_size_per_partition]
@@ -421,8 +425,16 @@ class ColumnParallelLinear(LinearBase):
             # However, we should fix this and avoid the branching here.
             param.load_column_parallel_weight(loaded_weight)
 
-    def forward(self, input_):
+    def forward(self, input_, allgather_input: bool = False):
         bias = self.bias if not self.skip_bias_add else None
+        if allgather_input:
+            allgather_size = list(input_.size())
+            allgather_size[0] = allgather_size[0] * self.tp_size
+            allgather_out = torch.empty(
+                allgather_size, dtype=input_.dtype, device=input_.device
+            )
+            self.tp_group.all_gather_into_tensor(allgather_out, input_.contiguous())
+            input_ = allgather_out
 
         # Matrix multiply.
         assert self.quant_method is not None
@@ -800,6 +812,7 @@ class QKVParallelLinear(ColumnParallelLinear):
         tp_rank: Optional[int] = None,
         tp_size: Optional[int] = None,
         load_presharded_attn: bool = False,
+        tp_group: Optional[parallel_state.GroupCoordinator] = None,
     ):
         self.hidden_size = hidden_size
         self.head_size = head_size
@@ -846,6 +859,7 @@ class QKVParallelLinear(ColumnParallelLinear):
             tp_rank=tp_rank,
             tp_size=tp_size,
             use_presharded_weights=self.use_presharded_weights,
+            tp_group=tp_group,
         )
 
     def _get_shard_offset_mapping(self, loaded_shard_id: str):
@@ -1233,6 +1247,8 @@ class RowParallelLinear(LinearBase):
         tp_rank: Optional[int] = None,
         tp_size: Optional[int] = None,
         use_presharded_weights: bool = False,
+        tp_group: Optional[parallel_state.GroupCoordinator] = None,
+        layer_scatter_modes: Optional["LayerScatterModes"] = None,
     ):
         quant_config = None if _disable_hip_linear_quant else quant_config
         super().__init__(
@@ -1247,7 +1263,10 @@ class RowParallelLinear(LinearBase):
             tp_rank = get_tensor_model_parallel_rank()
         if tp_size is None:
             tp_size = get_tensor_model_parallel_world_size()
-        self.tp_rank, self.tp_size = tp_rank, tp_size
+        if tp_group is None:
+            tp_group = get_tp_group()
+        self.tp_rank, self.tp_size, self.tp_group = tp_rank, tp_size, tp_group
+        self.layer_scatter_modes = layer_scatter_modes
         self.input_size_per_partition = divide(input_size, self.tp_size)
         assert self.quant_method is not None
         self.use_presharded_weights = use_presharded_weights
@@ -1360,7 +1379,7 @@ class RowParallelLinear(LinearBase):
             # It does not support additional parameters.
             param.load_row_parallel_weight(loaded_weight)
 
-    def forward(self, input_, skip_all_reduce=False):
+    def forward(self, input_, skip_all_reduce=False, enable_sp: bool = False):
         if self.input_is_parallel:
             input_parallel = input_
         else:
@@ -1379,10 +1398,18 @@ class RowParallelLinear(LinearBase):
         ):
             output_parallel = self.quant_method.apply(self, input_parallel, bias=bias_)
 
-        if self.reduce_results and self.tp_size > 1 and not skip_all_reduce:
-            output = tensor_model_parallel_all_reduce(output_parallel)
+        if not enable_sp:
+            if self.reduce_results and self.tp_size > 1 and not skip_all_reduce:
+                output = tensor_model_parallel_all_reduce(output_parallel)
+            else:
+                output = output_parallel
         else:
-            output = output_parallel
+            dim_size = list(output_parallel.size())
+            dim_size[0] = dim_size[0] // self.tp_size
+            output = torch.empty(
+                dim_size, dtype=output_parallel.dtype, device=output_parallel.device
+            )
+            self.tp_group.reduce_scatter_tensor(output, output_parallel.contiguous())
 
         output_bias = self.bias if self.skip_bias_add else None
 

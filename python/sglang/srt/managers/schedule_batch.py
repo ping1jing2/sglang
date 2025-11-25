@@ -97,6 +97,13 @@ INIT_INCREMENTAL_DETOKENIZATION_OFFSET = 5
 
 logger = logging.getLogger(__name__)
 
+GLOBAL_SERVER_ARGS_KEYS = [
+    "attention_backend",
+    "enable_sp",
+]
+
+global_server_args_dict = {k: getattr(ServerArgs, k) for k in GLOBAL_SERVER_ARGS_KEYS}
+
 
 class BaseFinishReason:
     def __init__(self, is_error: bool = False):

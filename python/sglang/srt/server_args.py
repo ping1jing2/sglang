@@ -558,7 +558,7 @@ class ServerArgs:
     num_reserved_decode_tokens: int = 512  # used for decode kv cache offload in PD
     # FIXME: hack to reduce ITL when decode bs is small
     disaggregation_decode_polling_interval: int = 1
-
+    enable_sp: bool = False
     # For model weight update and weight loading
     custom_weight_loader: Optional[List[str]] = None
     weight_loader_disable_mmap: bool = False
@@ -2569,6 +2569,11 @@ class ServerArgs:
             type=str,
             default=ServerArgs.export_metrics_to_file_dir,
             help="Directory path for writing performance metrics files (required when --export-metrics-to-file is enabled).",
+        )
+        parser.add_argument(
+            "--enable-sp",
+            action="store_true",
+            help="Enable sequence parallelism.",
         )
 
         # API related

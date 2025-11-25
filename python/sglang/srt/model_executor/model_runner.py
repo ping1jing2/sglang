@@ -97,6 +97,9 @@ from sglang.srt.managers.mm_utils import (
     resolve_external_mm_data_embedding_funcs,
     should_use_external_mm_preprocess,
 )
+from sglang.srt.managers.schedule_batch import (
+    global_server_args_dict,
+)
 from sglang.srt.mem_cache.allocator import (
     BaseTokenToKVPoolAllocator,
     PagedTokenToKVPoolAllocator,
@@ -2303,7 +2306,9 @@ class ModelRunner:
 
         # For MLP sync
         if forward_batch.global_num_tokens_cpu is not None:
-            forward_batch.prepare_mlp_sync_batch(self)
+            forward_batch.prepare_mlp_sync_batch(
+                self, global_server_args_dict["enable_sp"]
+            )
         else:
             forward_batch.prepare_attn_tp_scatter_input(self)
 

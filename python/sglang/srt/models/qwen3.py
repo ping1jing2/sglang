@@ -10,8 +10,16 @@ from sglang.srt.distributed import (
     get_tensor_model_parallel_rank,
     get_tensor_model_parallel_world_size,
 )
-from sglang.srt.layers.communicator import LayerCommunicator, LayerScatterModes
-from sglang.srt.layers.dp_attention import get_attention_tp_rank, get_attention_tp_size
+from sglang.srt.layers.communicator import (
+    LayerCommunicator,
+    LayerScatterModes,
+    ScatterMode,
+)
+from sglang.srt.layers.dp_attention import (
+    get_attention_tp_group,
+    get_attention_tp_rank,
+    get_attention_tp_size,
+)
 from sglang.srt.layers.layernorm import RMSNorm
 from sglang.srt.layers.linear import QKVParallelLinear, RowParallelLinear
 from sglang.srt.layers.logits_processor import LogitsProcessor
@@ -21,6 +29,7 @@ from sglang.srt.layers.radix_attention import RadixAttention
 from sglang.srt.layers.rotary_embedding import get_rope
 from sglang.srt.layers.utils import PPMissingLayer, get_layer_id
 from sglang.srt.layers.vocab_parallel_embedding import ParallelLMHead
+from sglang.srt.managers.schedule_batch import global_server_args_dict
 from sglang.srt.model_executor.cuda_graph_runner import get_is_capture_mode
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTensors
 from sglang.srt.model_loader.weight_utils import (
@@ -112,6 +121,7 @@ class Qwen3Attention(nn.Module):
             quant_config=quant_config,
             tp_rank=attn_tp_rank,
             tp_size=attn_tp_size,
+            tp_group=get_attention_tp_group() if attn_tp_size > 1 else None,
             prefix=add_prefix("qkv_proj", prefix),
         )
         self.o_proj = RowParallelLinear(
@@ -171,8 +181,8 @@ class Qwen3Attention(nn.Module):
         q, k = self.rotary_emb(positions, q, k)
         return q, k, v
 
-    def forward_prepare_npu(self, positions, hidden_states):
-        qkv, _ = self.qkv_proj(hidden_states)
+    def forward_prepare_npu(self, positions, hidden_states, allgather_input):
+        qkv, _ = self.qkv_proj(hidden_states, allgather_input=allgather_input)
 
         if self.attn.layer_id == 0:
             self.rotary_emb.get_cos_sin_with_position(positions)
@@ -196,6 +206,7 @@ class Qwen3Attention(nn.Module):
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
         forward_batch: ForwardBatch,
+        allgather_input: bool = False,
     ) -> torch.Tensor:
         if get_global_server_args().rl_on_policy_target is not None:
             hidden_states = hidden_states.bfloat16()
@@ -209,6 +220,7 @@ class Qwen3Attention(nn.Module):
             q, k, v = self.forward_prepare_npu(
                 positions=positions,
                 hidden_states=hidden_states,
+                allgather_input=allgather_input,
             )
 
         if get_global_server_args().rl_on_policy_target is not None:
@@ -216,7 +228,11 @@ class Qwen3Attention(nn.Module):
             k = k.to(torch.bfloat16)
 
         attn_output = self.attn(q, k, v, forward_batch)
-        output, _ = self.o_proj(attn_output)
+        output, _ = self.o_proj(
+            attn_output,
+            enable_sp=global_server_args_dict["enable_sp"]
+            and forward_batch.forward_mode.is_extend(),
+        )
         return output
 
 
@@ -286,6 +302,27 @@ class Qwen3DecoderLayer(nn.Module):
             input_layernorm=self.input_layernorm,
             post_attention_layernorm=self.post_attention_layernorm,
         )
+        self.enable_sp = global_server_args_dict["enable_sp"]
+        if self.enable_sp:
+            self.layer_scatter_modes_sp = LayerScatterModes.init_new(
+                enable_sp=True,
+                layer_id=layer_id,
+                num_layers=config.num_hidden_layers,
+                is_layer_sparse=False,
+                is_previous_layer_sparse=False,
+            )
+            self.layer_communicator_sp = LayerCommunicator(
+                layer_scatter_modes=self.layer_scatter_modes_sp,
+                input_layernorm=self.input_layernorm,
+                post_attention_layernorm=self.post_attention_layernorm,
+            )
+
+    def get_layer_communicator(self, is_extend: bool = False):
+        return (
+            self.layer_communicator_sp
+            if self.enable_sp and is_extend
+            else self.layer_communicator
+        )
 
     def forward(
         self,
@@ -295,7 +332,10 @@ class Qwen3DecoderLayer(nn.Module):
         residual: Optional[torch.Tensor],
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         # Self Attention
-        hidden_states, residual = self.layer_communicator.prepare_attn(
+        layer_communicator = self.get_layer_communicator(
+            forward_batch.forward_mode.is_extend()
+        )
+        hidden_states, residual = layer_communicator.prepare_attn(
             hidden_states, residual, forward_batch
         )
         if hidden_states.shape[0] != 0:
@@ -303,9 +343,12 @@ class Qwen3DecoderLayer(nn.Module):
                 positions=positions,
                 hidden_states=hidden_states,
                 forward_batch=forward_batch,
+                allgather_input=self.enable_sp
+                and forward_batch.forward_mode.is_extend()
+                and self.layer_scatter_modes_sp.attn_mode == ScatterMode.SCATTERED,
             )
 
-        # Fully Connected
+        # Fully Connectedenable_sp: bool = False
         hidden_states, residual = self.layer_communicator.prepare_mlp(
             hidden_states,
             residual,
@@ -316,7 +359,10 @@ class Qwen3DecoderLayer(nn.Module):
                 else None
             ),
         )
-        hidden_states = self.mlp(hidden_states)
+        hidden_states = self.mlp(
+            hidden_states,
+            enable_sp=self.enable_sp and forward_batch.forward_mode.is_extend(),
+        )
         if _is_npu and get_cmo_stream():
             wait_cmo_stream()
         hidden_states, residual = self.layer_communicator.postprocess_layer(
