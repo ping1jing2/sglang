@@ -226,6 +226,7 @@ class RotaryEmbedding(CustomOp):
         key: torch.Tensor,
         offsets: Optional[torch.Tensor] = None,
         fused_set_kv_buffer_arg: Optional[FusedSetKVBufferArg] = None,
+        layer_id: Optional[int] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """A PyTorch-npu implementation of forward()."""
         assert (
@@ -236,6 +237,15 @@ class RotaryEmbedding(CustomOp):
             return self.forward_native(
                 positions, query, key, offsets, fused_set_kv_buffer_arg
             )
+        elif self.head_size == 128 and layer_id is not None:
+            if layer_id == 0:
+                self.get_cos_sin_with_position(positions)
+            query = query.contiguous().view(query.shape[0], 1, -1, self.head_size)
+            key = key.contiguous().view(key.shape[0], 1, -1, self.head_size)
+            torch_npu.npu_apply_rotary_pos_emb(
+                query, key, self.position_cos, self.position_sin
+            )
+            return query, key
         else:
             rotary_mode = "half"
             if self.is_neox_style:

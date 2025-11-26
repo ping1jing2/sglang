@@ -23,6 +23,412 @@ if TYPE_CHECKING:
 
 import numpy as np
 
+import triton
+import triton.language as tl
+import torch
+
+
+@triton.jit
+def _paged_gqa_fwd_kernel_stage1(
+    Q,
+    K_Buffer,
+    V_Buffer,
+    sm_scale,
+    kv_seq_lens,
+    Att_Out,
+    Att_Lse,
+    block_table,
+    stride_block_table_batch: tl.constexpr,
+    stride_qbs: tl.constexpr,
+    stride_qh: tl.constexpr,
+    stride_buf_kbs: tl.constexpr,
+    stride_buf_kpage: tl.constexpr,
+    stride_buf_kh: tl.constexpr,
+    stride_buf_vbs: tl.constexpr,
+    stride_buf_vpage: tl.constexpr,
+    stride_buf_vh: tl.constexpr,
+    stride_mid_ob: tl.constexpr,
+    stride_mid_oh: tl.constexpr,
+    stride_mid_os: tl.constexpr,
+    stride_mid_lb: tl.constexpr,
+    stride_mid_lh: tl.constexpr,
+    q_heads_per_kv_head: tl.constexpr,
+    q_head_num: tl.constexpr,
+    BLOCK_DMODEL: tl.constexpr,
+    BLOCK_DPE: tl.constexpr,
+    BLOCK_DV: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_H: tl.constexpr,
+    Lk: tl.constexpr,
+    Lv: tl.constexpr,
+    MTP_STEP: tl.constexpr,
+):
+    """
+    Forward kernel for Grouped-Query Attention (GQA) with paged KV cache.
+
+    GQA allows multiple query heads to share the same key/value heads,
+    reducing memory bandwidth while preserving expressiveness.
+
+    Uses online softmax for numerical stability during incremental decoding.
+
+    Args:
+        Q (Tensor): Queries, shape [batch_size, q_head_num, Lk].
+        K_Buffer (Tensor): Paged key cache, shape [num_blocks, page_size, kv_head_num, Lk].
+        V_Buffer (Tensor): Paged value cache, shape [num_blocks, page_size, kv_head_num, Lv].
+        sm_scale (float): Attention scaling factor.
+        kv_seq_lens (Tensor): Sequence lengths, shape [batch_size].
+        Att_Out (Tensor): Output buffer, shape [batch_size, q_head_num, Lv].
+        block_table (Tensor): Logical-to-physical block mapping.
+        ... (strides): Memory strides.
+        q_heads_per_kv_head (int): Ratio of Q heads to KV heads.
+        q_head_num (int): Total number of query heads.
+        BLOCK_DMODEL (int): Tiled size for key dimension (padded).
+        BLOCK_DPE (int): Optional extra dim for RoPE (can be zero).
+        BLOCK_DV (int): Tiled size for value dimension (padded).
+        BLOCK_N (int): Page size.
+        BLOCK_H (int): Number of query heads processed per block.
+        Lk (int): Actual key dimension.
+        Lv (int): Actual value dimension.
+    """
+    cur_batch = tl.program_id(0)
+    cur_head_group_id = tl.program_id(1)
+    cur_kv_head = cur_head_group_id // tl.cdiv(q_heads_per_kv_head, BLOCK_H)
+
+    if BLOCK_H < q_heads_per_kv_head:
+        HEAD_NUM: tl.constexpr = BLOCK_H
+    else:
+        HEAD_NUM: tl.constexpr = q_heads_per_kv_head
+    cur_q_head_start = cur_head_group_id * HEAD_NUM
+
+    # Step 1: Load Q_nope + Q_rope
+    offset_h = cur_q_head_start + tl.arange(0, HEAD_NUM)
+    offset_d = tl.arange(0, BLOCK_DMODEL + BLOCK_DPE)
+    mask_h = offset_h < q_head_num
+    mask_d = offset_d < Lk
+
+    step_1 = 0
+    step_2 = 1
+    offset_q1 = (cur_batch * MTP_STEP + step_1) * stride_qbs + offset_h[:, None] * stride_qh + offset_d[None, :]
+    q1 = tl.load(Q + offset_q1, mask=(mask_h[:, None]) & (mask_d[None, :]))
+    offset_q2 = (cur_batch * MTP_STEP + step_2) * stride_qbs + offset_h[:, None] * stride_qh + offset_d[None, :]
+    q2 = tl.load(Q + offset_q2, mask=(mask_h[:, None]) & (mask_d[None, :]))
+    q = tl.zeros([2 * HEAD_NUM, BLOCK_DMODEL + BLOCK_DPE], dtype=q2.dtype)
+    q = tl.insert_slice(
+        q,
+        q1,
+        offsets=(0, 0),
+        sizes=(HEAD_NUM, BLOCK_DMODEL + BLOCK_DPE),
+        strides=(1, 1)
+    )
+    q = tl.insert_slice(
+        q,
+        q2,
+        offsets=(HEAD_NUM, 0),
+        sizes=(HEAD_NUM, BLOCK_DMODEL + BLOCK_DPE),
+        strides=(1, 1)
+    )
+
+    # Step 2: Iterate over physical blocks using PagedAttention
+    kv_split_id = tl.program_id(2)
+    cur_split_num = tl.num_programs(2)
+    cur_kv_seq_len = tl.load(kv_seq_lens + cur_batch)
+    page_num = tl.cdiv(cur_kv_seq_len, BLOCK_N)
+    page_num_per_split = page_num // cur_split_num
+    residual_page = page_num % cur_split_num
+
+    if kv_split_id < residual_page:
+        page_num_per_split += 1
+        cur_kv_split_start = kv_split_id * page_num_per_split
+    else:
+        cur_kv_split_start = kv_split_id * page_num_per_split + residual_page
+    cur_page_start = cur_batch * stride_block_table_batch + cur_kv_split_start
+
+    offset_page = tl.arange(0, BLOCK_N)
+    offset_dv = tl.arange(0, BLOCK_DV)
+    mask_dv = offset_dv < Lv
+
+    if page_num_per_split > 0:  # 去掉试一下
+        history_max = tl.zeros([2 * HEAD_NUM], dtype=tl.float32) - float('inf')
+        l = tl.zeros([2 * HEAD_NUM], dtype=tl.float32)
+        acc = tl.zeros([2 * HEAD_NUM, BLOCK_DV], dtype=tl.float32)
+
+        for page_id in range(page_num_per_split - 1):
+            # Load K
+            page_loc = tl.load(block_table + cur_page_start + page_id)
+            offset_k = (page_loc * stride_buf_kbs
+                        + offset_page[:, None] * stride_buf_kpage
+                        + cur_kv_head * stride_buf_kh
+                        + offset_d[None, :])
+            mask_page = (cur_kv_split_start + page_id * BLOCK_N + offset_page) < cur_kv_seq_len
+            k = tl.load(K_Buffer + offset_k, mask=(mask_page[:, None] & mask_d[None, :]))
+            k = tl.trans(k, (1, 0))
+            qk = tl.dot(q, k)
+
+            # Load V early to overlap with computation
+            offset_v = (page_loc * stride_buf_vbs
+                        + offset_page[:, None] * stride_buf_vpage
+                        + cur_kv_head * stride_buf_vh
+                        + offset_dv[None, :])
+            v = tl.load(V_Buffer + offset_v, mask=(mask_page[:, None] & mask_dv[None, :]))
+
+            qk = qk * sm_scale
+            new_e_max = tl.maximum(tl.max(qk, 1), history_max)
+            re_scale = tl.exp(history_max - new_e_max)
+            p_exp = tl.exp(qk - new_e_max[:, None])
+
+            l = l * re_scale + tl.sum(p_exp, 1)
+            acc = acc * re_scale[:, None] + tl.dot(p_exp.to(v.dtype), v)
+            history_max = new_e_max
+        # end if
+        history_max1 = tl.extract_slice(
+            history_max,
+            offsets=(0,),
+            sizes=(HEAD_NUM,),
+            strides=(1,)
+        )
+        history_max2 = tl.extract_slice(
+            history_max,
+            offsets=(HEAD_NUM,),
+            sizes=(HEAD_NUM,),
+            strides=(1,)
+        )
+        l1 = tl.extract_slice(
+            l,
+            offsets=(0,),
+            sizes=(HEAD_NUM,),
+            strides=(1,)
+        )
+        l2 = tl.extract_slice(
+            l,
+            offsets=(HEAD_NUM,),
+            sizes=(HEAD_NUM,),
+            strides=(1,)
+        )
+        acc1 = tl.extract_slice(
+            acc,
+            offsets=(0, 0),
+            sizes=(HEAD_NUM, BLOCK_DV),
+            strides=(1, 1)
+        )
+        acc2 = tl.extract_slice(
+            acc,
+            offsets=(HEAD_NUM, 0),
+            sizes=(HEAD_NUM, BLOCK_DV),
+            strides=(1, 1)
+        )
+        # =============================================== tail block start
+        # qk1 qk2
+        page_id = page_num_per_split - 1
+        page_loc = tl.load(block_table + cur_page_start + page_id)
+        offset_k = (page_loc * stride_buf_kbs
+                    + offset_page[:, None] * stride_buf_kpage
+                    + cur_kv_head * stride_buf_kh
+                    + offset_d[None, :])
+        mask_page_0 = (cur_kv_split_start + page_id * BLOCK_N + offset_page) < cur_kv_seq_len - 1
+        mask_page_1 = (cur_kv_split_start + page_id * BLOCK_N + offset_page) < cur_kv_seq_len
+        k = tl.load(K_Buffer + offset_k, mask=(mask_page_1[:, None] & mask_d[None, :]))
+        k = tl.trans(k, (1, 0))
+        qk1 = tl.dot(q1, k)
+        qk2 = tl.dot(q2, k)
+        offset_v = (page_loc * stride_buf_vbs
+                    + offset_page[:, None] * stride_buf_vpage
+                    + cur_kv_head * stride_buf_vh
+                    + offset_dv[None, :])
+        v = tl.load(V_Buffer + offset_v, mask=(mask_page_1[:, None] & mask_dv[None, :]))
+        # softmax1
+        qk1 = qk1 * sm_scale
+        qk1 = tl.where((mask_h[:, None] & mask_page_0[None, :]), qk1, float("-inf"))
+        new_e_max1 = tl.maximum(tl.max(qk1, 1), history_max1)
+        re_scale1 = tl.exp(history_max1 - new_e_max1)
+        p_exp1 = tl.exp(qk1 - new_e_max1[:, None])
+
+        l1 = l1 * re_scale1 + tl.sum(p_exp1, 1)
+        acc1 = acc1 * re_scale1[:, None] + tl.dot(p_exp1.to(v.dtype), v)
+        history_max1 = new_e_max1
+        # softmax2
+        qk2 = qk2 * sm_scale
+        qk2 = tl.where((mask_h[:, None] & mask_page_1[None, :]), qk2, float("-inf"))
+        new_e_max2 = tl.maximum(tl.max(qk2, 1), history_max2)
+        re_scale2 = tl.exp(history_max2 - new_e_max2)
+        p_exp2 = tl.exp(qk2 - new_e_max2[:, None])
+
+        l2 = l2 * re_scale2 + tl.sum(p_exp2, 1)
+        acc2 = acc2 * re_scale2[:, None] + tl.dot(p_exp2.to(v.dtype), v)
+        history_max2 = new_e_max2
+        # ================================================== tail block end
+
+        offs_mid_o = ((cur_batch * MTP_STEP + step_1) * stride_mid_ob
+                      + offset_h[:, None] * stride_mid_oh
+                      + kv_split_id * stride_mid_os
+                      + offset_dv[None, :])
+        tl.store(Att_Out + offs_mid_o, acc1 / l1[:, None], mask=(mask_h[:, None] & mask_dv[None, :]))
+
+        offs_mid_o_lse = (cur_batch * MTP_STEP + step_1) * stride_mid_lb + offset_h * stride_mid_lh + kv_split_id
+        tl.store(Att_Lse + offs_mid_o_lse, history_max1 + tl.log(l1), mask=mask_h)
+
+        offs_mid_o = ((cur_batch * MTP_STEP + step_2) * stride_mid_ob
+                      + offset_h[:, None] * stride_mid_oh
+                      + kv_split_id * stride_mid_os
+                      + offset_dv[None, :])
+        tl.store(Att_Out + offs_mid_o, acc2 / l2[:, None], mask=(mask_h[:, None] & mask_dv[None, :]))
+
+        offs_mid_o_lse = (cur_batch * MTP_STEP + step_2) * stride_mid_lb + offset_h * stride_mid_lh + kv_split_id
+        tl.store(Att_Lse + offs_mid_o_lse, history_max2 + tl.log(l2), mask=mask_h)
+
+
+@triton.jit
+def _fwd_kernel_stage2(
+    Mid_O,
+    Mid_O_l,
+    O,
+    stride_mid_ob,
+    stride_mid_oh,
+    stride_mid_os,
+    stride_mid_lb,
+    stride_mid_lh,
+    stride_obs,
+    stride_oh,
+    MAX_KV_SPLITS: tl.constexpr,
+    BLOCK_DV: tl.constexpr,
+    Lv: tl.constexpr,
+):
+    cur_batch = tl.program_id(0)
+    cur_head = tl.program_id(1)
+
+    offs_d = tl.arange(0, BLOCK_DV)
+    mask_d = offs_d < Lv
+
+    e_sum = 0.0
+    e_max = -float("inf")
+    acc = tl.zeros([BLOCK_DV], dtype=tl.float32)
+
+    offs_v = cur_batch * stride_mid_ob + cur_head * stride_mid_oh + offs_d
+    offs_logic = cur_batch * stride_mid_lb + cur_head * stride_mid_lh
+
+    for split_kv_id in range(0, MAX_KV_SPLITS):
+        acc_logits = tl.load(
+            Mid_O + offs_v + split_kv_id * stride_mid_os, mask=mask_d
+        )
+        tlogic = tl.load(Mid_O_l + offs_logic + split_kv_id)
+        n_e_max = tl.maximum(tlogic, e_max)
+
+        old_scale = tl.exp(e_max - n_e_max)
+        acc *= old_scale
+        exp_logic = tl.exp(tlogic - n_e_max)
+        acc += exp_logic * acc_logits
+
+        e_sum = e_sum * old_scale + exp_logic
+        e_max = n_e_max
+
+    tl.store(
+        O + cur_batch * stride_obs + cur_head * stride_oh + offs_d,
+        acc / e_sum,
+        mask=mask_d,
+    )
+
+
+def decode_gqa(
+    q,
+    k_buffer,
+    v_buffer,
+    att_out,
+    att_lse,
+    out,
+    kv_seq_lens,
+    max_kv_splits,
+    sm_scale,
+    page_size,
+    block_table,
+):
+    """
+    Wrapper function to launch GQA forward kernel.
+
+    Handles special cases for known architectures (e.g., DeepSeek-V3 uses split K).
+
+    Args:
+        q (Tensor): Input queries
+        k_buffer (Tensor): Paged key cache
+        v_buffer (Tensor): Paged value cache
+        att_out (Tensor): Output buffer
+        kv_seq_lens (Tensor): Sequence lengths
+        sm_scale (float): Attention scale
+        page_size (int): Size of each KV block
+        block_table (Tensor): Block mapping table
+    """
+    Lk = k_buffer.shape[-1]
+    Lv = v_buffer.shape[-1]
+
+    BLOCK_N = page_size
+    BLOCK_H = 16
+    # Special-case tiling for models like DeepSeek-V3 which split K into model+RoPE parts
+    BLOCK_DMODEL = triton.next_power_of_2(Lk)
+    BLOCK_DPE = 0
+    BLOCK_DV = triton.next_power_of_2(Lv)
+    MTP_STEP = 2
+
+    batch, q_head_num = kv_seq_lens.shape[0], q.shape[1]
+    kv_head_num = k_buffer.shape[2]
+    q_heads_per_kv_head = q_head_num // kv_head_num
+    assert q_head_num % kv_head_num == 0, "head_num must be divisible by kv_head_num"
+    grid = (
+        batch,
+        triton.cdiv(q_head_num, min(BLOCK_H, q_heads_per_kv_head)),
+        max_kv_splits,
+    )
+    _paged_gqa_fwd_kernel_stage1[grid](
+        q,
+        k_buffer,
+        v_buffer,
+        sm_scale,
+        kv_seq_lens,
+        att_out,
+        att_lse,
+        block_table,
+        block_table.stride(0),
+        q.stride(0),
+        q.stride(1),
+        k_buffer.stride(0),
+        k_buffer.stride(1),
+        k_buffer.stride(2),
+        v_buffer.stride(0),
+        v_buffer.stride(1),
+        v_buffer.stride(2),
+        att_out.stride(0),
+        att_out.stride(1),
+        att_out.stride(2),
+        att_lse.stride(0),
+        att_lse.stride(1),
+        q_heads_per_kv_head=q_heads_per_kv_head,
+        q_head_num=q_head_num,
+        BLOCK_DMODEL=BLOCK_DMODEL,
+        BLOCK_DPE=BLOCK_DPE,
+        BLOCK_DV=BLOCK_DV,
+        BLOCK_N=BLOCK_N,
+        BLOCK_H=BLOCK_H,
+        Lk=Lk,
+        Lv=Lv,
+        MTP_STEP=2,
+        limit_auto_multi_buffer_only_for_local_buffer=False,
+        multibuffer=True
+    )
+
+    grid = (batch * MTP_STEP, q_head_num)
+    _fwd_kernel_stage2[grid](
+        att_out,
+        att_lse,
+        out,
+        att_out.stride(0),
+        att_out.stride(1),
+        att_out.stride(2),
+        att_lse.stride(0),
+        att_lse.stride(1),
+        out.stride(0),
+        out.stride(1),
+        MAX_KV_SPLITS=max_kv_splits,
+        BLOCK_DV=BLOCK_DV,
+        Lv=Lv,
+    )
+
 
 @dataclass
 class ForwardMetadata:
@@ -509,98 +915,157 @@ class AscendAttnBackend(AttentionBackend):
                 )
             else:
                 forward_batch.token_to_kv_pool.set_kv_buffer(
-                    layer, forward_batch.out_cache_loc, k, v
+                    layer, forward_batch.out_cache_loc.to(torch.int32), k, v
+                )
+        if not self.use_mla:
+            k_cache = forward_batch.token_to_kv_pool.get_key_buffer(
+                layer.layer_id).view(-1, self.page_size, layer.tp_k_head_num, layer.qk_head_dim)
+            v_cache = forward_batch.token_to_kv_pool.get_value_buffer(
+                layer.layer_id).view(-1, self.page_size, layer.tp_v_head_num, layer.v_head_dim)
+            query = q.reshape(-1, layer.tp_q_head_num, layer.qk_head_dim)
+            if not self.graph_mode:
+                num_token_padding = query.shape[0]
+                query = query[: forward_batch.num_token_non_padded_cpu]
+            if self.graph_mode:
+                actual_seq_lengths_kv = self.forward_metadata.seq_lens
+            else:
+                if self.forward_metadata.seq_lens_cpu_int is None:
+                    actual_seq_lengths_kv = self.forward_metadata.seq_lens_cpu_list
+                else:
+                    actual_seq_lengths_kv = (
+                        self.forward_metadata.seq_lens_cpu_int.cpu().int().tolist()
+                    )
+                actual_seq_lengths_kv = torch.tensor(actual_seq_lengths_kv, dtype=torch.int32, device=query.device)
+
+            max_kv_splits = 24
+            attn_output = torch.empty_like(query)
+            # 用empty初始化性能劣化
+            attn_logits = torch.zeros(
+                query.shape[0], layer.tp_q_head_num, max_kv_splits, layer.v_head_dim,
+                device=query.device, dtype=query.dtype
+            )
+            attn_lse = torch.zeros(
+                query.shape[0], layer.tp_q_head_num, max_kv_splits, device=query.device, dtype=query.dtype
+            )
+            sm_scale = 1.0 / (layer.qk_head_dim ** 0.5)
+            decode_gqa(
+                query,
+                k_cache,
+                v_cache,
+                attn_logits,
+                attn_lse,
+                attn_output,
+                actual_seq_lengths_kv,
+                max_kv_splits,
+                sm_scale,
+                self.page_size,
+                self.forward_metadata.block_tables,
+            )
+
+            attn_output = attn_output.view(-1, layer.tp_q_head_num * layer.v_head_dim)
+            if (
+                not self.graph_mode
+                and forward_batch.num_token_non_padded_cpu != num_token_padding
+            ):
+                attn_output = torch.cat(
+                    [
+                        attn_output,
+                        attn_output.new_zeros(
+                            num_token_padding - forward_batch.num_token_non_padded_cpu, *attn_output.shape[1:]
+                        ),
+                    ],
+                    dim=0,
+                )
+            return attn_output
+        else:
+            c_kv, k_rope = forward_batch.token_to_kv_pool.get_kv_buffer(layer.layer_id)
+            k_rope_cache = k_rope.view(
+                -1, layer.tp_k_head_num, self.page_size, self.qk_rope_head_dim
+            )
+            c_kv_cache = c_kv.view(
+                -1, layer.tp_v_head_num, self.page_size, self.kv_lora_rank
+            )
+
+            q_nope = q.view(-1, layer.tp_q_head_num, self.kv_lora_rank).contiguous()
+            q_rope = q_rope.view(-1, layer.tp_q_head_num, self.qk_rope_head_dim)
+            if not self.graph_mode:
+                num_token_padding = q.shape[0]
+                q_nope = q_nope[: forward_batch.num_token_non_padded_cpu]
+                q_rope = q_rope[: forward_batch.num_token_non_padded_cpu]
+            if self.forward_metadata.seq_lens_cpu_int is None:
+                actual_seq_lengths_kv = self.forward_metadata.seq_lens_cpu_list
+            else:
+                actual_seq_lengths_kv = (
+                    self.forward_metadata.seq_lens_cpu_int.cpu().int().tolist()
+                )
+            if forward_batch.forward_mode.is_draft_extend():
+                actual_seq_lengths = (
+                    np.array(forward_batch.extend_seq_lens_cpu).cumsum().tolist()
+                )
+            else:
+                actual_seq_lengths = np.arange(
+                    self.speculative_num_draft_tokens,
+                    self.speculative_num_draft_tokens + q_nope.shape[0],
+                    self.speculative_num_draft_tokens,
                 )
 
-        c_kv, k_rope = forward_batch.token_to_kv_pool.get_kv_buffer(layer.layer_id)
-        k_rope_cache = k_rope.view(
-            -1, layer.tp_k_head_num, self.page_size, self.qk_rope_head_dim
-        )
-        c_kv_cache = c_kv.view(
-            -1, layer.tp_v_head_num, self.page_size, self.kv_lora_rank
-        )
-
-        q_nope = q.view(-1, layer.tp_q_head_num, self.kv_lora_rank).contiguous()
-        q_rope = q_rope.view(-1, layer.tp_q_head_num, self.qk_rope_head_dim)
-        if not self.graph_mode:
-            num_token_padding = q.shape[0]
-            q_nope = q_nope[: forward_batch.num_token_non_padded_cpu]
-            q_rope = q_rope[: forward_batch.num_token_non_padded_cpu]
-        if self.forward_metadata.seq_lens_cpu_int is None:
-            actual_seq_lengths_kv = self.forward_metadata.seq_lens_cpu_list
-        else:
-            actual_seq_lengths_kv = (
-                self.forward_metadata.seq_lens_cpu_int.cpu().int().tolist()
+            workspace = torch_npu._npu_fused_infer_attention_score_get_max_workspace(
+                q_nope,
+                c_kv_cache,
+                c_kv_cache,
+                query_rope=q_rope,
+                key_rope=k_rope_cache,
+                num_heads=layer.tp_q_head_num,
+                num_key_value_heads=layer.tp_k_head_num,
+                input_layout="TND",
+                scale=layer.scaling,
+                antiquant_mode=0,
+                antiquant_scale=None,
+                block_table=self.forward_metadata.block_tables,
+                block_size=self.page_size,
+                sparse_mode=3,
+                atten_mask=self.mtp_mask,
+                actual_seq_lengths=actual_seq_lengths,
+                actual_seq_lengths_kv=actual_seq_lengths_kv,
             )
-        if forward_batch.forward_mode.is_draft_extend():
-            actual_seq_lengths = (
-                np.array(forward_batch.extend_seq_lens_cpu).cumsum().tolist()
+            attn_output = torch.empty_like(q_nope, dtype=q.dtype, device=q.device)
+            softmax_lse = torch.empty(1, dtype=q.dtype, device=q.device)
+            torch_npu.npu_fused_infer_attention_score.out(
+                q_nope,
+                c_kv_cache,
+                c_kv_cache,
+                query_rope=q_rope,
+                key_rope=k_rope_cache,
+                num_heads=layer.tp_q_head_num,
+                num_key_value_heads=layer.tp_k_head_num,
+                input_layout="TND",
+                scale=layer.scaling,
+                antiquant_mode=0,
+                antiquant_scale=None,
+                block_table=self.forward_metadata.block_tables,
+                block_size=self.page_size,
+                sparse_mode=3,
+                atten_mask=self.mtp_mask,
+                actual_seq_lengths=actual_seq_lengths,
+                actual_seq_lengths_kv=actual_seq_lengths_kv,
+                workspace=workspace,
+                out=[attn_output, softmax_lse],
             )
-        else:
-            actual_seq_lengths = np.arange(
-                self.speculative_num_draft_tokens,
-                self.speculative_num_draft_tokens + q_nope.shape[0],
-                self.speculative_num_draft_tokens,
-            )
-
-        workspace = torch_npu._npu_fused_infer_attention_score_get_max_workspace(
-            q_nope,
-            c_kv_cache,
-            c_kv_cache,
-            query_rope=q_rope,
-            key_rope=k_rope_cache,
-            num_heads=layer.tp_q_head_num,
-            num_key_value_heads=layer.tp_k_head_num,
-            input_layout="TND",
-            scale=layer.scaling,
-            antiquant_mode=0,
-            antiquant_scale=None,
-            block_table=self.forward_metadata.block_tables,
-            block_size=self.page_size,
-            sparse_mode=3,
-            atten_mask=self.mtp_mask,
-            actual_seq_lengths=actual_seq_lengths,
-            actual_seq_lengths_kv=actual_seq_lengths_kv,
-        )
-        attn_output = torch.empty_like(q_nope, dtype=q.dtype, device=q.device)
-        softmax_lse = torch.empty(1, dtype=q.dtype, device=q.device)
-        torch_npu.npu_fused_infer_attention_score.out(
-            q_nope,
-            c_kv_cache,
-            c_kv_cache,
-            query_rope=q_rope,
-            key_rope=k_rope_cache,
-            num_heads=layer.tp_q_head_num,
-            num_key_value_heads=layer.tp_k_head_num,
-            input_layout="TND",
-            scale=layer.scaling,
-            antiquant_mode=0,
-            antiquant_scale=None,
-            block_table=self.forward_metadata.block_tables,
-            block_size=self.page_size,
-            sparse_mode=3,
-            atten_mask=self.mtp_mask,
-            actual_seq_lengths=actual_seq_lengths,
-            actual_seq_lengths_kv=actual_seq_lengths_kv,
-            workspace=workspace,
-            out=[attn_output, softmax_lse],
-        )
-        attn_output = attn_output.view(-1, layer.tp_q_head_num * layer.v_head_dim)
-        if (
-            not self.graph_mode
-            and forward_batch.num_token_non_padded_cpu != num_token_padding
-        ):
-            attn_output = torch.cat(
-                [
-                    attn_output,
-                    attn_output.new_zeros(
-                        num_token_padding - attn_output.shape[0], *attn_output.shape[1:]
-                    ),
-                ],
-                dim=0,
-            )
-        return attn_output
-
+            attn_output = attn_output.view(-1, layer.tp_q_head_num * layer.v_head_dim)
+            if (
+                not self.graph_mode
+                and forward_batch.num_token_non_padded_cpu != num_token_padding
+            ):
+                attn_output = torch.cat(
+                    [
+                        attn_output,
+                        attn_output.new_zeros(
+                            num_token_padding - attn_output.shape[0], *attn_output.shape[1:]
+                        ),
+                    ],
+                    dim=0,
+                )
+            return attn_output
     def forward_decode_graph(
         self,
         q: torch.Tensor,

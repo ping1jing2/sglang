@@ -99,12 +99,14 @@ class EagleDraftInputV2Mixin:
             num_needed_tokens += x
             r.kv_allocated_len += x
 
-        cur_kv_lens_cpu = torch.tensor(cur_kv_lens_cpu, dtype=torch.int32, device="cpu")
-        nxt_kv_lens_cpu = torch.tensor(nxt_kv_lens_cpu, dtype=torch.int32, device="cpu")
+        cur_kv_lens_cpu = torch.tensor(cur_kv_lens_cpu, dtype=torch.int64, device="cpu")
+        nxt_kv_lens_cpu = torch.tensor(nxt_kv_lens_cpu, dtype=torch.int64, device="cpu")
 
         if page_size == 1:
             out_cache_loc = alloc_token_slots(batch.tree_cache, num_needed_tokens)
         else:
+            if num_needed_tokens == 0:
+                return
             cur_kv_lens = cur_kv_lens_cpu.to(device=batch.device)
             nxt_kv_lens = nxt_kv_lens_cpu.to(device=batch.device)
             last_loc = get_last_loc(
@@ -289,6 +291,7 @@ class EagleVerifyInputV2Mixin:
         if sampling_info.is_all_greedy or _is_npu:
             target_predict = torch.argmax(next_token_logits, dim=-1)
             target_predict = target_predict.reshape(bs, self.draft_token_num)
+            #print(f"{candidates=}, {target_predict=}, {accept_length=}")
             predict, accept_index, accept_length = verify_tree_greedy_func(
                 predicts=predict,  # mutable
                 accept_index=accept_index,  # mutable

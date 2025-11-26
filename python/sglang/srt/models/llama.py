@@ -52,11 +52,11 @@ from sglang.srt.model_loader.weight_utils import (
     maybe_remap_kv_scale_name,
 )
 from sglang.srt.server_args import get_global_server_args
-from sglang.srt.utils import add_prefix, make_layers
+from sglang.srt.utils import add_prefix, make_layers, is_npu
 from sglang.utils import get_exception_traceback
 
 logger = logging.getLogger(__name__)
-
+_is_npu = is_npu()
 
 class LlamaMLP(nn.Module):
     def __init__(
@@ -184,6 +184,7 @@ class LlamaAttention(nn.Module):
             quant_config=quant_config,
             prefix=add_prefix("attn", prefix),
         )
+        self.layer_id = layer_id
 
     def forward(
         self,
@@ -193,7 +194,7 @@ class LlamaAttention(nn.Module):
     ) -> torch.Tensor:
         qkv, _ = self.qkv_proj(hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
-        q, k = self.rotary_emb(positions, q, k)
+        q, k = self.rotary_emb(positions, q, k) if not _is_npu else self.rotary_emb(positions, q, k, layer_id=self.layer_id)
         attn_output = self.attn(q, k, v, forward_batch)
         output, _ = self.o_proj(attn_output)
         return output

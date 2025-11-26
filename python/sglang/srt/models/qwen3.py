@@ -44,8 +44,8 @@ logger = logging.getLogger(__name__)
 _is_cuda = is_cuda()
 _is_npu = is_npu()
 
-if _is_npu:
-    from sgl_kernel_npu.norm.split_qkv_rmsnorm_rope import split_qkv_rmsnorm_rope
+# if _is_npu:
+#     from sgl_kernel_npu.norm.split_qkv_rmsnorm_rope import split_qkv_rmsnorm_rope
 
 
 class Qwen3Attention(nn.Module):
@@ -141,6 +141,7 @@ class Qwen3Attention(nn.Module):
             prefix=add_prefix("attn", prefix),
         )
         self.alt_stream = alt_stream
+        self.layer_id = layer_id
 
     def _apply_qk_norm(
         self, q: torch.Tensor, k: torch.Tensor
@@ -173,22 +174,9 @@ class Qwen3Attention(nn.Module):
 
     def forward_prepare_npu(self, positions, hidden_states):
         qkv, _ = self.qkv_proj(hidden_states)
-
-        if self.attn.layer_id == 0:
-            self.rotary_emb.get_cos_sin_with_position(positions)
-        q, k, v = split_qkv_rmsnorm_rope(
-            qkv,
-            self.rotary_emb.position_sin,
-            self.rotary_emb.position_cos,
-            self.q_norm.weight,
-            self.k_norm.weight,
-            self.q_size,
-            self.kv_size,
-            self.head_dim,
-            self.q_norm.variance_epsilon,
-            q_bias=getattr(self.q_norm, "bias", None),
-            k_bias=getattr(self.k_norm, "bias", None),
-        )
+        q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
+        q, k = self._apply_qk_norm(q, k)
+        q, k = self.rotary_emb(positions, q, k) if not _is_npu else self.rotary_emb(positions, q, k, layer_id=self.layer_id)
         return q, k, v
 
     def forward(
