@@ -408,8 +408,8 @@ def decode_gqa(
         Lk=Lk,
         Lv=Lv,
         MTP_STEP=2,
-        limit_auto_multi_buffer_only_for_local_buffer=False,
-        multibuffer=True
+        limit_auto_multi_buffer_only_for_local_buffer=True,
+        multibuffer=False
     )
 
     grid = (batch * MTP_STEP, q_head_num)
@@ -937,7 +937,7 @@ class AscendAttnBackend(AttentionBackend):
                     )
                 actual_seq_lengths_kv = torch.tensor(actual_seq_lengths_kv, dtype=torch.int32, device=query.device)
 
-            max_kv_splits = 24
+            max_kv_splits = 1
             attn_output = torch.empty_like(query)
             # 用empty初始化性能劣化
             attn_logits = torch.zeros(
