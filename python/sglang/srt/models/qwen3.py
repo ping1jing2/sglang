@@ -55,6 +55,7 @@ _is_npu = is_npu()
 
 if _is_npu:
     from sgl_kernel_npu.norm.split_qkv_rmsnorm_rope import split_qkv_rmsnorm_rope
+    from sgl_kernel_npu.norm.add_rmsnorm_bias import add_rmsnorm_bias
 
 
 class Qwen3Attention(nn.Module):
@@ -301,6 +302,7 @@ class Qwen3DecoderLayer(nn.Module):
             layer_scatter_modes=self.layer_scatter_modes,
             input_layernorm=self.input_layernorm,
             post_attention_layernorm=self.post_attention_layernorm,
+            layer=self.self_attn.qkv_proj
         )
         self.enable_sp = global_server_args_dict["enable_sp"]
         if self.enable_sp:

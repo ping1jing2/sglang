@@ -83,6 +83,10 @@ _is_npu = is_npu()
 
 if _is_npu:
     from sgl_kernel_npu.norm.split_qkv_rmsnorm_rope import split_qkv_rmsnorm_rope
+    from sgl_kernel_npu.norm.add_rmsnorm_bias import add_rmsnorm_bias
+
+    from sglang.srt.utils.common import prepare_weight_cache, wait_cmo_stream
+
 
 
 class Qwen3MoeSparseMoeBlock(nn.Module):
@@ -583,6 +587,7 @@ class Qwen3MoeDecoderLayer(nn.Module):
             post_attention_layernorm=self.post_attention_layernorm,
             allow_reduce_scatter=True,
             is_last_layer=(self.layer_id == self.config.num_hidden_layers - 1),
+            layer=self.self_attn.qkv_proj,
         )
 
     def forward(
@@ -600,6 +605,7 @@ class Qwen3MoeDecoderLayer(nn.Module):
                 residual,
                 forward_batch,
                 captured_last_layer_outputs=captured_last_layer_outputs,
+                func=add_rmsnorm_bias,
             )
         )
 

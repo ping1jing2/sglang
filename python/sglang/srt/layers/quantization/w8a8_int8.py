@@ -710,7 +710,7 @@ class NPU_W8A8LinearMethodImpl:
             layer.weight,
             layer.deq_scale,
             bias=quant_bias,
-            output_dtype=original_dtype,
+            output_dtype=layer.params_dtype,
         )
 
     def process_weights_after_loading(self, layer):
@@ -1097,7 +1097,7 @@ class NPU_W8A8MoEMethod(FusedMoEMethodBase):
             requires_grad=False,
         )
         layer.w2_weight_scale = Parameter(
-            layer.w2_weight_scale.data.squeeze(-1).contiguous(), requires_grad=False
+            layer.w2_weight_scale.data.squeeze(-1).contiguous().to(torch.bfloat16), requires_grad=False
         )
         layer.w13_weight_offset = Parameter(
             layer.w13_weight_offset.data.squeeze(-1).contiguous(), requires_grad=False

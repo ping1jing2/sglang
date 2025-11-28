@@ -331,6 +331,7 @@ class LayerCommunicator:
         allow_reduce_scatter: bool = False,
         is_last_layer: bool = False,
         qkv_latent_func: Optional[Callable] = None,
+        layer=None
     ):
         self.layer_scatter_modes = layer_scatter_modes
         self.input_layernorm = input_layernorm
@@ -338,6 +339,7 @@ class LayerCommunicator:
         self.allow_reduce_scatter = allow_reduce_scatter
         self.is_last_layer = is_last_layer
         self.qkv_latent_func = qkv_latent_func
+        self.layer = layer
 
         self._context = CommunicateContext.init_new()
         self._communicate_simple_fn = CommunicateSimpleFn.get_fn(
@@ -373,9 +375,10 @@ class LayerCommunicator:
         residual: torch.Tensor,
         forward_batch: ForwardBatch,
         captured_last_layer_outputs: Optional[List[torch.Tensor]] = None,
+        func=None,
     ):
         hidden_states, residual = self.prepare_attn(
-            hidden_states, residual, forward_batch
+            hidden_states, residual, forward_batch, func=func,
         )
         if captured_last_layer_outputs is not None:
             gathered_last_layer_output = self._communicate_simple_fn(
@@ -395,6 +398,7 @@ class LayerCommunicator:
         residual: torch.Tensor,
         forward_batch: ForwardBatch,
         quant_format: str = "",
+        func=None
     ):
         if get_attn_tp_context().input_scattered:
             hidden_states, residual = self._tp_reduce_scatter(
@@ -475,9 +479,20 @@ class LayerCommunicator:
                             output_unquantized_inp1=False,
                         )
                     else:
-                        hidden_states, residual = self.input_layernorm(
-                            hidden_states, residual
-                        )
+                        if func is None:
+                            hidden_states, residual = self.input_layernorm(
+                                hidden_states, residual
+                            )
+                        else:
+                            hidden_states, residual = func(
+                                hidden_states,
+                                residual,
+                                self.input_layernorm.weight,
+                                self.input_layernorm.bias,
+                                self.input_layernorm.variance_epsilon,
+                                self.layer.aclnn_input_scale_reciprocal,
+                                self.layer.aclnn_input_offset,
+                            )
 
         hidden_states = self._communicate_simple_fn(
             hidden_states=hidden_states,
@@ -661,10 +676,16 @@ class CommunicateSimpleFn:
         forward_batch: ForwardBatch,
         context: CommunicateContext,
     ) -> torch.Tensor:
-        hidden_states, local_hidden_states = (
-            get_local_dp_buffer(),
-            hidden_states,
-        )
+        if hidden_states.dtype == torch.bfloat16:
+            hidden_states, local_hidden_states = (
+                get_local_dp_buffer(),
+                hidden_states,
+            )
+        else:
+            local_hidden_states = hidden_states
+            world_size = get_attention_tp_size()
+            hidden_states = local_hidden_states.new_empty(world_size * local_hidden_states.shape[0],
+                                                          local_hidden_states.shape[1])
         attn_tp_all_gather_into_tensor(
             hidden_states,
             local_hidden_states,
