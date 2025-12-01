@@ -45,6 +45,7 @@ from sglang.srt.utils import (
     is_cuda,
     is_npu,
     wait_cmo_stream,
+    add_rmsnorm_bias,
 )
 
 Qwen3Config = None
@@ -55,7 +56,7 @@ _is_npu = is_npu()
 
 if _is_npu:
     from sgl_kernel_npu.norm.split_qkv_rmsnorm_rope import split_qkv_rmsnorm_rope
-    from sgl_kernel_npu.norm.add_rmsnorm_bias import add_rmsnorm_bias
+    # from sgl_kernel_npu.norm.add_rmsnorm_bias import add_rmsnorm_bias
 
 
 class Qwen3Attention(nn.Module):
@@ -338,7 +339,7 @@ class Qwen3DecoderLayer(nn.Module):
             forward_batch.forward_mode.is_extend()
         )
         hidden_states, residual = layer_communicator.prepare_attn(
-            hidden_states, residual, forward_batch
+            hidden_states, residual, forward_batch, func=add_rmsnorm_bias
         )
         if hidden_states.shape[0] != 0:
             hidden_states = self.self_attn(
@@ -360,6 +361,8 @@ class Qwen3DecoderLayer(nn.Module):
                 if _is_npu
                 else None
             ),
+            func=add_rmsnorm_bias,
+            layer=self.mlp.gate_up_proj,
         )
         hidden_states = self.mlp(
             hidden_states,

@@ -1048,7 +1048,7 @@ class Scheduler(
                 with_modules=False,
                 experimental_config=experimental_config)
 
-        prof_bs = 12
+        prof_bs = 16
         while True:
             recv_reqs = self.recv_requests()
             self.process_input_requests(recv_reqs)

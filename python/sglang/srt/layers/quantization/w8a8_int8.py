@@ -67,6 +67,103 @@ elif _is_npu:
     from sgl_kernel_npu.norm.add_rmsnorm_bias import add_rmsnorm_bias
 
 logger = logging.getLogger(__name__)
+import torch
+import triton
+import triton.language as tl
+from sgl_kernel_npu.utils.triton_utils import get_device_properties
+
+
+@triton.jit
+def quant_kernel(
+    input_ptr,
+    quant_scale_ptr,
+    quant_offset_ptr,
+    output_ptr,
+    batch_size,
+    hidden_size: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
+    COL_BLOCK_SIZE: tl.constexpr,
+):
+    row_start = tl.program_id(0)
+    row_step = tl.num_programs(0)
+    cols = tl.arange(0, BLOCK_SIZE)
+    valid_mask = cols < hidden_size
+    input_offsets = row_start * hidden_size + cols
+    for i in tl.range(row_start, batch_size, row_step):
+        buffered_values = tl.load(input_ptr + input_offsets, mask=valid_mask, other=0.0)
+        block_cols = tl.arange(0, COL_BLOCK_SIZE)
+        for block_offset in range(0, hidden_size, COL_BLOCK_SIZE):
+            col_indices = block_offset + block_cols
+            valid_mask2 = col_indices < hidden_size
+            block_buffered_values = tl.extract_slice(
+                buffered_values, (block_offset,), (COL_BLOCK_SIZE,), (1,)
+            )
+            # quant
+            quant_scale_values = tl.load(
+                quant_scale_ptr + col_indices, mask=valid_mask2, other=0.0
+            )
+            quant_offset_values = tl.load(
+                quant_offset_ptr + col_indices, mask=valid_mask2, other=0.0
+            )
+            block_buffered_values = (
+                block_buffered_values.to(tl.float32) * quant_scale_values
+            ) + quant_offset_values
+            block_buffered_values = block_buffered_values.cast(tl.int8, overflow_mode="saturate")
+            tl.store(
+                output_ptr + i * hidden_size + col_indices,
+                block_buffered_values,
+                mask=valid_mask2,
+            )
+
+        input_offsets += row_step * hidden_size
+
+
+kernels = {}
+
+
+def quant(
+    input,
+    quant_scale=None,
+    quant_offset=None,
+):
+    _, num_vectorcore = get_device_properties()
+
+    batch_size = input.shape[0]
+    hidden_size = input.shape[1]
+    BLOCK_SIZE = triton.next_power_of_2(hidden_size)
+    COL_BLOCK_SIZE = 4096
+    n_rows = min(batch_size, num_vectorcore)
+
+    output = torch.empty(
+        batch_size, hidden_size, device=input.device, dtype=torch.int8
+    )
+
+    kernel = kernels.get(
+        (n_rows, hidden_size, BLOCK_SIZE, COL_BLOCK_SIZE), None
+    )
+    if kernel is None:
+        kernel = quant_kernel.warmup(
+            input,
+            quant_scale,
+            quant_offset,
+            output,
+            batch_size,
+            hidden_size,
+            BLOCK_SIZE,
+            COL_BLOCK_SIZE,
+            grid=(n_rows,),
+        )
+        kernel._init_handles()
+        kernels[(n_rows, hidden_size, BLOCK_SIZE, COL_BLOCK_SIZE)] = kernel
+
+    kernel[(n_rows, 1, 1)](
+        input,
+        quant_scale,
+        quant_offset,
+        output,
+        batch_size,
+    )
+    return output
 
 
 # func refers to RMSNorm.__init__
@@ -691,14 +788,15 @@ class NPU_W8A8LinearMethodImpl:
 
         original_dtype = x.dtype
         if original_dtype != torch.int8:
-            x = torch_npu.npu_quantize(
-                x,
-                layer.aclnn_input_scale_reciprocal,
-                layer.aclnn_input_offset,
-                torch.qint8,
-                -1,
-                False,
-            )
+            x = quant(x, layer.aclnn_input_scale_reciprocal, layer.aclnn_input_offset)
+            # x = torch_npu.npu_quantize(
+            #     x,
+            #     layer.aclnn_input_scale_reciprocal,
+            #     layer.aclnn_input_offset,
+            #     torch.qint8,
+            #     -1,
+            #     False,
+            # )
         # Only fuse bias add into GEMM for rank 0 (this ensures that
         # bias will not get added more than once in Attention TP>1 case)
         if isinstance(layer, RowParallelLinear) and layer.tp_rank > 0:

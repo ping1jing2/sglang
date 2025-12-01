@@ -71,6 +71,7 @@ from sglang.srt.utils import (
     is_flashinfer_available,
     is_non_idle_and_non_empty,
     is_npu,
+    add_rmsnorm_bias,
 )
 
 Qwen3MoeConfig = None
@@ -83,7 +84,7 @@ _is_npu = is_npu()
 
 if _is_npu:
     from sgl_kernel_npu.norm.split_qkv_rmsnorm_rope import split_qkv_rmsnorm_rope
-    from sgl_kernel_npu.norm.add_rmsnorm_bias import add_rmsnorm_bias
+    # from sgl_kernel_npu.norm.add_rmsnorm_bias import add_rmsnorm_bias
 
     from sglang.srt.utils.common import prepare_weight_cache, wait_cmo_stream
 

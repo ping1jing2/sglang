@@ -331,7 +331,7 @@ class LayerCommunicator:
         allow_reduce_scatter: bool = False,
         is_last_layer: bool = False,
         qkv_latent_func: Optional[Callable] = None,
-        layer=None
+        layer=None,
     ):
         self.layer_scatter_modes = layer_scatter_modes
         self.input_layernorm = input_layernorm
@@ -488,10 +488,10 @@ class LayerCommunicator:
                                 hidden_states,
                                 residual,
                                 self.input_layernorm.weight,
-                                self.input_layernorm.bias,
-                                self.input_layernorm.variance_epsilon,
-                                self.layer.aclnn_input_scale_reciprocal,
-                                self.layer.aclnn_input_offset,
+                                eps=self.input_layernorm.variance_epsilon,
+                                norm_bias=None,
+                                quant_scale=self.layer.aclnn_input_scale_reciprocal,
+                                quant_offset=self.layer.aclnn_input_offset,
                             )
 
         hidden_states = self._communicate_simple_fn(
@@ -531,9 +531,13 @@ class LayerCommunicator:
         residual: torch.Tensor,
         forward_batch: ForwardBatch,
         cache=None,
+        func=None,
+        layer=None,
     ):
         if cache is not None:
             self._context.cache = cache
+        if layer is not None:
+            self._context.layer = layer
 
         return self._communicate_with_all_reduce_and_layer_norm_fn(
             hidden_states=hidden_states,
@@ -541,6 +545,7 @@ class LayerCommunicator:
             forward_batch=forward_batch,
             layernorm=self.post_attention_layernorm,
             context=self._context,
+            func=func,
         )
 
     def postprocess_layer(
@@ -617,6 +622,7 @@ class CommunicateContext:
     attn_dp_size: int
     tp_size: int
     cache = None
+    layer = None
     tp_rank: int
 
     def is_same_group_size(self, a: ScatterMode, b: ScatterMode):
@@ -776,6 +782,7 @@ class CommunicateWithAllReduceAndLayerNormFn:
         forward_batch: ForwardBatch,
         layernorm: torch.nn.Module,
         context: CommunicateContext,
+        func=None,
     ):
         # TODO move these `if shape != 0` into LayerNorm itself
         if hidden_states.shape[0] != 0:
@@ -790,6 +797,7 @@ class CommunicateWithAllReduceAndLayerNormFn:
         layernorm: torch.nn.Module,
         context: CommunicateContext,
         weight=None,
+        func=None,
     ):
         tensor_list_residual = list(residual.tensor_split(context.attn_tp_size))
         residual = tensor_list_residual[context.attn_tp_rank]
@@ -805,6 +813,7 @@ class CommunicateWithAllReduceAndLayerNormFn:
         forward_batch: ForwardBatch,
         layernorm: torch.nn.Module,
         context: CommunicateContext,
+        func=None,
         *,
         residual_input_mode,
     ):
@@ -863,7 +872,19 @@ class CommunicateWithAllReduceAndLayerNormFn:
                 hidden_states = tensor_model_parallel_all_reduce(hidden_states)
                 if context.cache is not None:
                     _ = prepare_weight_cache(hidden_states, context.cache)
-                hidden_states, residual = layernorm(hidden_states, residual)
+                if func is None:
+                    hidden_states, residual = layernorm(hidden_states, residual)
+                else:
+                    hidden_states, residual = func(
+                        hidden_states,
+                        residual,
+                        layernorm.weight,
+                        eps=layernorm.variance_epsilon,
+                        norm_bias=None,
+                        quant_scale=context.layer.aclnn_input_scale_reciprocal,
+                        quant_offset=context.layer.aclnn_input_offset,
+                    )
+
         return hidden_states, residual
 
     @staticmethod
