@@ -99,8 +99,8 @@ class EagleDraftInputV2Mixin:
             num_needed_tokens += x
             r.kv_allocated_len += x
 
-        cur_kv_lens_cpu = torch.tensor(cur_kv_lens_cpu, dtype=torch.int32, device="cpu")
-        nxt_kv_lens_cpu = torch.tensor(nxt_kv_lens_cpu, dtype=torch.int32, device="cpu")
+        cur_kv_lens_cpu = torch.tensor(cur_kv_lens_cpu, dtype=torch.int64, device="cpu")
+        nxt_kv_lens_cpu = torch.tensor(nxt_kv_lens_cpu, dtype=torch.int64, device="cpu")
 
         if page_size == 1:
             out_cache_loc = alloc_token_slots(batch.tree_cache, num_needed_tokens)

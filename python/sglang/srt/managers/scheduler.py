@@ -852,9 +852,10 @@ class Scheduler(
             draft_token_to_kv_pool = (
                 self.draft_worker.draft_worker.draft_runner.token_to_kv_pool
             )
+            model_config = self.draft_worker.draft_worker.draft_runner.model_config
         else:
             draft_token_to_kv_pool = self.draft_worker.model_runner.token_to_kv_pool
-
+            model_config = self.draft_worker.model_config
         if (
             self.disaggregation_mode == DisaggregationMode.DECODE
         ):  # *2 for the headroom.
@@ -865,12 +866,12 @@ class Scheduler(
             self.disagg_metadata_buffers = MetadataBuffers(
                 buffer_size,
                 hidden_size=(
-                    self.draft_worker.model_config.hidden_size
+                    model_config.hidden_size
                     if self.spec_algorithm.is_eagle()
                     else 16  # minimal padding size for RDMA
                 ),
                 hidden_states_dtype=(
-                    self.draft_worker.model_config.dtype
+                    model_config.dtype
                     if self.spec_algorithm.is_eagle()
                     else torch.float32
                 ),
@@ -918,12 +919,12 @@ class Scheduler(
             self.disagg_metadata_buffers = MetadataBuffers(
                 buffer_size,
                 hidden_size=(
-                    self.draft_worker.model_config.hidden_size
+                    model_config.hidden_size
                     if self.spec_algorithm.is_eagle()
                     else 16  # minimal padding size for RDMA
                 ),
                 hidden_states_dtype=(
-                    self.draft_worker.model_config.dtype
+                    model_config.dtype
                     if self.spec_algorithm.is_eagle()
                     else torch.float32
                 ),
@@ -1048,7 +1049,7 @@ class Scheduler(
                 with_modules=False,
                 experimental_config=experimental_config)
 
-        prof_bs = 16
+        prof_bs = 32
         while True:
             recv_reqs = self.recv_requests()
             self.process_input_requests(recv_reqs)
