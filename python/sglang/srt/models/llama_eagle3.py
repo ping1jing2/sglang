@@ -38,6 +38,7 @@ from sglang.srt.layers.vocab_parallel_embedding import (
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTensors
 from sglang.srt.model_loader.weight_utils import default_weight_loader
 from sglang.srt.models.llama import LlamaDecoderLayer, LlamaForCausalLM, LlamaMLP
+import torch_npu
 
 
 class LlamaDecoderLayer(LlamaDecoderLayer):
@@ -137,6 +138,7 @@ class LlamaModel(nn.Module):
             config.hidden_size,
             bias=getattr(config, "bias", False),
         )
+        self.fc.weight.data = torch_npu.npu_format_cast(self.fc.weight.data, 29)
 
         self.midlayer = LlamaDecoderLayer(config, 0, quant_config, prefix)
 
@@ -216,7 +218,7 @@ class LlamaForCausalLMEagle3(LlamaForCausalLM):
                 quant_config=quant_config,
                 prefix=add_prefix("lm_head", prefix),
             )
-
+        self.lm_head.weight.data = torch_npu.npu_format_cast(self.lm_head.weight.data, 29)
         config_ = copy.deepcopy(config)
         config_.vocab_size = (
             config_.draft_vocab_size

@@ -138,30 +138,33 @@ def quant(
         batch_size, hidden_size, device=input.device, dtype=torch.int8
     )
 
-    kernel = kernels.get(
-        (n_rows, hidden_size, BLOCK_SIZE, COL_BLOCK_SIZE), None
-    )
-    if kernel is None:
-        kernel = quant_kernel.warmup(
-            input,
-            quant_scale,
-            quant_offset,
-            output,
-            batch_size,
-            hidden_size,
-            BLOCK_SIZE,
-            COL_BLOCK_SIZE,
-            grid=(n_rows,),
-        )
-        kernel._init_handles()
-        kernels[(n_rows, hidden_size, BLOCK_SIZE, COL_BLOCK_SIZE)] = kernel
+    # kernel = kernels.get(
+    #     (n_rows, hidden_size, BLOCK_SIZE, COL_BLOCK_SIZE), None
+    # )
+    # if kernel is None:
+    #     kernel = quant_kernel.warmup(
+    #         input,
+    #         quant_scale,
+    #         quant_offset,
+    #         output,
+    #         batch_size,
+    #         hidden_size,
+    #         BLOCK_SIZE,
+    #         COL_BLOCK_SIZE,
+    #         grid=(n_rows,),
+    #     )
+    #     kernel._init_handles()
+    #     kernels[(n_rows, hidden_size, BLOCK_SIZE, COL_BLOCK_SIZE)] = kernel
 
-    kernel[(n_rows, 1, 1)](
+    quant_kernel[(n_rows, 1, 1)](
         input,
         quant_scale,
         quant_offset,
         output,
         batch_size,
+        hidden_size,
+        BLOCK_SIZE,
+        COL_BLOCK_SIZE
     )
     return output
 

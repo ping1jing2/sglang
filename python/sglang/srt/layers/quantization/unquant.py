@@ -108,6 +108,8 @@ class UnquantizedLinearMethod(LinearMethodBase):
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
         if _is_cpu and _is_cpu_amx_available:
             _amx_process_weight_after_loading(layer, ["weight"])
+        import torch_npu
+        layer.weight.data = torch_npu.npu_format_cast(layer.weight.data, 29)
 
     def apply(
         self,
