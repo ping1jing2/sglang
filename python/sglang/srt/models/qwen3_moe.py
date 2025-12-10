@@ -606,7 +606,7 @@ class Qwen3MoeDecoderLayer(nn.Module):
                 residual,
                 forward_batch,
                 captured_last_layer_outputs=captured_last_layer_outputs,
-                func=add_rmsnorm_bias,
+                # func=add_rmsnorm_bias,
             )
         )
 
