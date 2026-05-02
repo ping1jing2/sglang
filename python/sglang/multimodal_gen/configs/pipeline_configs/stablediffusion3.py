@@ -26,6 +26,7 @@ from sglang.multimodal_gen.configs.pipeline_configs.base import (
     ModelTaskType,
     SpatialImagePipelineConfig,
 )
+from sglang.multimodal_gen.registry import register_model
 
 
 def sd3_clip_postprocess_text(outputs: BaseEncoderOutput, _text_inputs) -> torch.Tensor:
@@ -200,3 +201,20 @@ class StableDiffusion3PipelineConfig(SpatialImagePipelineConfig):
             batch.height // spatial_ratio,
             batch.width // spatial_ratio,
         )
+
+
+def register():
+    from sglang.multimodal_gen.configs.sample.stablediffusion3 import (
+        SD3SamplingParams,
+    )
+
+    register_model(
+        sampling_param_cls=SD3SamplingParams,
+        pipeline_config_cls=StableDiffusion3PipelineConfig,
+        hf_model_paths=[
+            "stabilityai/stable-diffusion-3.5-large",
+            "stabilityai/stable-diffusion-3.5-medium",
+            "stabilityai/stable-diffusion-3-medium-diffusers",
+        ],
+        model_detectors=[lambda hf_id: "stable-diffusion-3" in hf_id.lower()],
+    )
