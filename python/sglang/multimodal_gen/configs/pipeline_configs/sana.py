@@ -31,6 +31,7 @@ from sglang.multimodal_gen.configs.pipeline_configs.base import (
     ModelTaskType,
     SpatialImagePipelineConfig,
 )
+from sglang.multimodal_gen.registry import register_model
 
 
 def sana_postprocess_text(outputs: BaseEncoderOutput, _text_inputs) -> torch.Tensor:
@@ -119,3 +120,17 @@ class SanaPipelineConfig(SpatialImagePipelineConfig):
 
     def gather_latents_for_sp(self, latents):
         return latents
+
+
+def register():
+    from sglang.multimodal_gen.configs.sample.sana import SanaSamplingParams
+
+    register_model(
+        sampling_param_cls=SanaSamplingParams,
+        pipeline_config_cls=SanaPipelineConfig,
+        hf_model_paths=[
+            "Efficient-Large-Model/Sana_1600M_1024px_diffusers",
+            "Efficient-Large-Model/Sana_1600M_512px_diffusers",
+        ],
+        model_detectors=[lambda hf_id: "sana" in hf_id.lower()],
+    )
