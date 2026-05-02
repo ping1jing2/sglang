@@ -14,6 +14,7 @@ from sglang.multimodal_gen.configs.pipeline_configs.base import (
     ModelTaskType,
     shard_rotary_emb_for_sp,
 )
+from sglang.multimodal_gen.registry import register_model
 from sglang.multimodal_gen.runtime.utils.logging_utils import init_logger
 
 logger = init_logger(__name__)
@@ -204,3 +205,15 @@ class ErnieImagePipelineConfig(ImagePipelineConfig):
 
     def post_denoising_loop(self, latents, batch):
         return latents
+
+
+def register():
+    from sglang.multimodal_gen.configs.sample.ernie_image import (
+        ErnieImageSamplingParams,
+    )
+
+    register_model(
+        sampling_param_cls=ErnieImageSamplingParams,
+        pipeline_config_cls=ErnieImagePipelineConfig,
+        model_detectors=[lambda hf_id: "ernie" in hf_id.lower() and "image" in hf_id.lower()],
+    )
