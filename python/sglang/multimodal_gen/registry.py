@@ -227,21 +227,15 @@ def _discover_and_register_configs():
             mod = importlib.import_module(module_name)
         except Exception as exc:
             logger.warning(
-                "Skipping config module %s during discovery due to import failure: %s",
-                module_name,
-                exc,
+                f"Skipping config module {module_name} during discovery due to import failure: {exc}"
             )
-            logger.debug(
-                "Config import failure details for %s", module_name, exc_info=True
-            )
+            logger.debug(f"Config import failure details for {module_name}", exc_info=True)
             continue
         if hasattr(mod, "register"):
             mod.register()
-            logger.debug("Registered model configs from %s", module_name)
+            logger.debug(f"Registered model configs from {module_name}")
 
-    logger.debug(
-        "Config discovery complete, %d models registered", len(_CONFIG_REGISTRY)
-    )
+    logger.debug(f"Config discovery complete, {len(_CONFIG_REGISTRY)} models registered")
 
 
 def get_model_short_name(model_id: str) -> str:
