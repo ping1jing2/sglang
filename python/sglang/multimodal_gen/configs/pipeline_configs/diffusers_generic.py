@@ -14,6 +14,7 @@ from sglang.multimodal_gen.configs.pipeline_configs.base import (
     ModelTaskType,
     PipelineConfig,
 )
+from sglang.multimodal_gen.registry import register_model
 
 
 @dataclass
@@ -78,3 +79,14 @@ class DiffusersGenericPipelineConfig(PipelineConfig):
         Pass through - diffusers handles frame count.
         """
         return num_frames
+
+
+def register():
+    from sglang.multimodal_gen.configs.sample.diffusers_generic import (
+        DiffusersGenericSamplingParams,
+    )
+
+    register_model(
+        sampling_param_cls=DiffusersGenericSamplingParams,
+        pipeline_config_cls=DiffusersGenericPipelineConfig,
+    )
