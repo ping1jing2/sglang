@@ -13,6 +13,7 @@ from sglang.multimodal_gen.configs.pipeline_configs.base import (
     ModelTaskType,
     PipelineConfig,
 )
+from sglang.multimodal_gen.registry import register_model
 from sglang.multimodal_gen.runtime.utils.logging_utils import init_logger
 
 logger = init_logger(__name__)
@@ -117,4 +118,39 @@ class HeliosDistilledConfig(HeliosT2VConfig):
     scheduler_type: str = "dmd"
     pyramid_num_inference_steps_list: list[int] = field(
         default_factory=lambda: [10, 10, 10]
+    )
+
+
+def register():
+    from sglang.multimodal_gen.configs.sample.helios import (
+        HeliosDistilledSamplingParams,
+        HeliosMidSamplingParams,
+        HeliosT2VSamplingParams,
+    )
+
+    register_model(
+        sampling_param_cls=HeliosT2VSamplingParams,
+        pipeline_config_cls=HeliosT2VConfig,
+        hf_model_paths=[
+            "BestWishYsh/Helios-Base",
+        ],
+        model_detectors=[
+            lambda hf_id: "helios" in hf_id.lower()
+            and "mid" not in hf_id.lower()
+            and "distill" not in hf_id.lower()
+        ],
+    )
+    register_model(
+        sampling_param_cls=HeliosMidSamplingParams,
+        pipeline_config_cls=HeliosMidConfig,
+        hf_model_paths=[
+            "BestWishYsh/Helios-Mid",
+        ],
+    )
+    register_model(
+        sampling_param_cls=HeliosDistilledSamplingParams,
+        pipeline_config_cls=HeliosDistilledConfig,
+        hf_model_paths=[
+            "BestWishYsh/Helios-Distilled",
+        ],
     )
