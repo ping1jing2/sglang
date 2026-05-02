@@ -3,8 +3,9 @@
 Central registry for multimodal models.
 
 This module provides a centralized registry for multimodal models, including pipelines
-and sampling parameters. It allows for easy registration and retrieval of model
-information based on model paths or other identifiers.
+and sampling parameters. Models self-register via ``register_model()`` calls placed
+in their own config modules, eliminating the need to modify this file when adding
+a new model.
 """
 
 import dataclasses
@@ -28,116 +29,7 @@ from typing import (
 if TYPE_CHECKING:
     from sglang.multimodal_gen.runtime.server_args import Backend
 
-from sglang.multimodal_gen.configs.pipeline_configs import (
-    FastHunyuanConfig,
-    FluxPipelineConfig,
-    HeliosDistilledConfig,
-    HeliosMidConfig,
-    HeliosT2VConfig,
-    HunyuanConfig,
-    WanI2V480PConfig,
-    WanI2V720PConfig,
-    WanT2V480PConfig,
-    WanT2V720PConfig,
-    ZImagePipelineConfig,
-)
 from sglang.multimodal_gen.configs.pipeline_configs.base import PipelineConfig
-from sglang.multimodal_gen.configs.pipeline_configs.ernie_image import (
-    ErnieImagePipelineConfig,
-)
-from sglang.multimodal_gen.configs.pipeline_configs.flux import (
-    Flux2KleinPipelineConfig,
-    Flux2PipelineConfig,
-)
-from sglang.multimodal_gen.configs.pipeline_configs.glm_image import (
-    GlmImagePipelineConfig,
-)
-from sglang.multimodal_gen.configs.pipeline_configs.hunyuan3d import (
-    Hunyuan3D2PipelineConfig,
-)
-from sglang.multimodal_gen.configs.pipeline_configs.joy_image import (
-    JoyImageEditPipelineConfig,
-)
-from sglang.multimodal_gen.configs.pipeline_configs.ltx_2 import LTX2PipelineConfig
-from sglang.multimodal_gen.configs.pipeline_configs.mova import (
-    MOVA360PConfig,
-    MOVA720PConfig,
-)
-from sglang.multimodal_gen.configs.pipeline_configs.qwen_image import (
-    QwenImageEditPipelineConfig,
-    QwenImageEditPlus_2511_PipelineConfig,
-    QwenImageEditPlusPipelineConfig,
-    QwenImageLayeredPipelineConfig,
-    QwenImagePipelineConfig,
-)
-from sglang.multimodal_gen.configs.pipeline_configs.sana import SanaPipelineConfig
-from sglang.multimodal_gen.configs.pipeline_configs.stablediffusion3 import (
-    StableDiffusion3PipelineConfig,
-)
-from sglang.multimodal_gen.configs.pipeline_configs.wan import (
-    FastWan2_1_T2V_480P_Config,
-    FastWan2_2_TI2V_5B_Config,
-    TurboWanI2V720Config,
-    TurboWanT2V480PConfig,
-    Wan2_2_I2V_A14B_Config,
-    Wan2_2_T2V_A14B_Config,
-    Wan2_2_TI2V_5B_Config,
-)
-from sglang.multimodal_gen.configs.sample.ernie_image import ErnieImageSamplingParams
-from sglang.multimodal_gen.configs.sample.flux import (
-    Flux2KleinSamplingParams,
-    Flux2SamplingParams,
-    FluxSamplingParams,
-)
-from sglang.multimodal_gen.configs.sample.glmimage import GlmImageSamplingParams
-from sglang.multimodal_gen.configs.sample.helios import (
-    HeliosDistilledSamplingParams,
-    HeliosMidSamplingParams,
-    HeliosT2VSamplingParams,
-)
-from sglang.multimodal_gen.configs.sample.hunyuan import (
-    FastHunyuanSamplingParam,
-    HunyuanSamplingParams,
-)
-from sglang.multimodal_gen.configs.sample.hunyuan3d import Hunyuan3DSamplingParams
-from sglang.multimodal_gen.configs.sample.joy_image import (
-    JoyImageEditSamplingParams,
-)
-from sglang.multimodal_gen.configs.sample.ltx_2 import (
-    LTX2SamplingParams,
-    LTX23HQSamplingParams,
-    LTX23SamplingParams,
-)
-from sglang.multimodal_gen.configs.sample.mova import (
-    MOVA_360P_SamplingParams,
-    MOVA_720P_SamplingParams,
-)
-from sglang.multimodal_gen.configs.sample.qwenimage import (
-    QwenImage2512SamplingParams,
-    QwenImageEditPlusSamplingParams,
-    QwenImageLayeredSamplingParams,
-    QwenImageSamplingParams,
-)
-from sglang.multimodal_gen.configs.sample.sana import SanaSamplingParams
-from sglang.multimodal_gen.configs.sample.stablediffusion3 import (
-    StableDiffusion3SamplingParams,
-)
-from sglang.multimodal_gen.configs.sample.wan import (
-    FastWanT2V480PConfig,
-    Turbo_Wan2_2_I2V_A14B_SamplingParam,
-    Wan2_1_Fun_1_3B_InP_SamplingParams,
-    Wan2_2_I2V_A14B_SamplingParam,
-    Wan2_2_T2V_A14B_SamplingParam,
-    Wan2_2_TI2V_5B_SamplingParam,
-    WanI2V_14B_480P_SamplingParam,
-    WanI2V_14B_720P_SamplingParam,
-    WanT2V_1_3B_SamplingParams,
-    WanT2V_14B_SamplingParams,
-)
-from sglang.multimodal_gen.configs.sample.zimage import (
-    ZImageSamplingParams,
-    ZImageTurboSamplingParams,
-)
 from sglang.multimodal_gen.runtime.pipelines_core.composed_pipeline_base import (
     ComposedPipelineBase,
 )
@@ -228,12 +120,12 @@ def get_pipeline_config_classes(
     """
     Get the configuration classes for a pipeline.
     """
-    # Ensure pipelines are discovered first
     _discover_and_register_pipelines()
     return _PIPELINE_CONFIG_REGISTRY.get(pipeline_class_name)
 
 
 # --- Part 2: Config Registration ---
+
 @dataclasses.dataclass
 class ConfigInfo:
     """Encapsulates all configuration information required to register a
@@ -252,15 +144,35 @@ _MODEL_HF_PATH_TO_NAME: Dict[str, str] = {}
 # Detectors to identify model families from paths or class names
 _MODEL_NAME_DETECTORS: List[Tuple[str, Callable[[str], bool]]] = []
 
+_configs_discovered: bool = False
 
-def register_configs(
+
+def register_model(
     sampling_param_cls: Any,
     pipeline_config_cls: Type[PipelineConfig],
     hf_model_paths: Optional[List[str]] = None,
     model_detectors: Optional[List[Callable[[str], bool]]] = None,
+    pipeline_config_registry_entries: Optional[
+        Dict[str, Tuple[Type[PipelineConfig], Type[Any]]]
+    ] = None,
 ):
     """
-    Registers configuration classes for a new model family.
+    Register a model family with its configuration classes.
+
+    This function should be called from each model's own config module
+    (e.g., ``glm_image.py``, ``wan.py``) at module level so that the
+    model self-registers when the module is imported.
+
+    Args:
+        sampling_param_cls: The SamplingParams subclass for this model.
+        pipeline_config_cls: The PipelineConfig subclass for this model.
+        hf_model_paths: Optional list of HuggingFace model repo IDs that
+            map to this configuration.
+        model_detectors: Optional list of callables that return True when
+            a given model path or pipeline class name matches this model.
+        pipeline_config_registry_entries: Optional dict mapping pipeline
+            class names to ``(PipelineConfig, SamplingParams)`` tuples,
+            registered into ``_PIPELINE_CONFIG_REGISTRY``.
     """
     model_id = str(len(_CONFIG_REGISTRY))
 
@@ -280,6 +192,51 @@ def register_configs(
         for detector in model_detectors:
             _MODEL_NAME_DETECTORS.append((model_id, detector))
 
+    if pipeline_config_registry_entries:
+        for pipeline_name, (pc_cls, sp_cls) in pipeline_config_registry_entries.items():
+            _PIPELINE_CONFIG_REGISTRY.setdefault(pipeline_name, (pc_cls, sp_cls))
+
+
+# Backward-compatible alias
+register_configs = register_model
+
+
+def _discover_and_register_configs():
+    """
+    Auto-discover all model config modules and trigger self-registration.
+
+    Scans ``sglang.multimodal_gen.configs.pipeline_configs`` for modules
+    that define a ``register()`` function at module level.  Each module's
+    ``register()`` calls :func:`register_model` with model-specific
+    parameters, so adding a new model only requires editing its own file.
+    """
+    global _configs_discovered
+    if _configs_discovered:
+        return
+    _configs_discovered = True
+
+    package_name = "sglang.multimodal_gen.configs.pipeline_configs"
+    package = importlib.import_module(package_name)
+
+    for _, module_name, ispkg in pkgutil.walk_packages(
+        package.__path__, package.__name__ + "."
+    ):
+        if ispkg:
+            continue
+        try:
+            mod = importlib.import_module(module_name)
+        except Exception as exc:
+            logger.warning(
+                f"Skipping config module {module_name} during discovery due to import failure: {exc}"
+            )
+            logger.debug(f"Config import failure details for {module_name}", exc_info=True)
+            continue
+        if hasattr(mod, "register"):
+            mod.register()
+            logger.debug(f"Registered model configs from {module_name}")
+
+    logger.debug(f"Config discovery complete, {len(_CONFIG_REGISTRY)} models registered")
+
 
 def get_model_short_name(model_id: str) -> str:
     if "/" in model_id:
@@ -297,6 +254,8 @@ def _normalize_hf_cache_path(path: str) -> str:
 
 
 def has_registered_diffusion_model_path(model_path: str) -> bool:
+    _discover_and_register_configs()
+
     all_model_hf_paths = sorted(_MODEL_HF_PATH_TO_NAME.keys(), key=len, reverse=True)
 
     if model_path in _MODEL_HF_PATH_TO_NAME:
@@ -326,6 +285,8 @@ def _get_config_info(
     """
     Gets the ConfigInfo for a given model path using mappings and detectors.
     """
+    _discover_and_register_configs()
+
     all_model_hf_paths = sorted(_MODEL_HF_PATH_TO_NAME.keys(), key=len, reverse=True)
 
     # 0. Explicit model_id override: match by short name
@@ -552,19 +513,20 @@ def get_model_info(
         # Try to get from model_index.json
         try:
             config = maybe_download_model_index(model_path)
-        except Exception as e:
-            logger.error(f"Could not read model config for '{model_path}': {e}")
-            if backend == Backend.AUTO:
-                logger.info("Falling back to diffusers backend")
-                return _get_diffusers_model_info(
-                    model_path=model_path, model_id=model_id
+            pipeline_class_name = config.get("_class_name")
+            if not pipeline_class_name:
+                logger.error(
+                    f"'_class_name' not found in model_index.json for '{model_path}'"
                 )
-            return None
-
-        pipeline_class_name = config.get("_class_name")
-        if not pipeline_class_name:
-            logger.error(
-                f"'_class_name' not found in model_index.json for '{model_path}'"
+                if backend == Backend.AUTO:
+                    logger.info("Falling back to diffusers backend")
+                    return _get_diffusers_model_info(
+                        model_path=model_path, model_id=model_id
+                    )
+                return None
+        except Exception as e:
+            logger.warning(
+                f"Failed to download or parse model_index.json for '{model_path}': {e}"
             )
             if backend == Backend.AUTO:
                 logger.info("Falling back to diffusers backend")
@@ -617,371 +579,6 @@ def get_model_info(
     logger.debug(f"Found model info: {model_info}")
 
     return model_info
-
-
-# Registration of model configs
-def _register_configs():
-    # LTX-2
-    register_configs(
-        sampling_param_cls=LTX2SamplingParams,
-        pipeline_config_cls=LTX2PipelineConfig,
-        hf_model_paths=["Lightricks/LTX-2"],
-        model_detectors=[
-            lambda path: "ltx" in path.lower() and "video" in path.lower(),
-            lambda path: "ltx-2" in path.lower() and "ltx-2.3" not in path.lower(),
-        ],
-    )
-    register_configs(
-        sampling_param_cls=LTX23SamplingParams,
-        pipeline_config_cls=LTX2PipelineConfig,
-        hf_model_paths=["Lightricks/LTX-2.3"],
-        model_detectors=[
-            lambda path: "ltx-2.3" in path.lower(),
-        ],
-    )
-    # register dedicated sampling params for LTX2TwoStageHQPipeline
-    _PIPELINE_CONFIG_REGISTRY.setdefault(
-        "LTX2TwoStageHQPipeline",
-        (LTX2PipelineConfig, LTX23HQSamplingParams),
-    )
-
-    # Hunyuan
-    register_configs(
-        sampling_param_cls=HunyuanSamplingParams,
-        pipeline_config_cls=HunyuanConfig,
-        hf_model_paths=[
-            "hunyuanvideo-community/HunyuanVideo",
-        ],
-        model_detectors=[lambda hf_id: "hunyuanvideo" in hf_id.lower()],
-    )
-    register_configs(
-        sampling_param_cls=FastHunyuanSamplingParam,
-        pipeline_config_cls=FastHunyuanConfig,
-        hf_model_paths=[
-            "FastVideo/FastHunyuan-diffusers",
-        ],
-    )
-    # Wan
-    register_configs(
-        sampling_param_cls=WanT2V_1_3B_SamplingParams,
-        pipeline_config_cls=WanT2V480PConfig,
-        hf_model_paths=[
-            "Wan-AI/Wan2.1-T2V-1.3B-Diffusers",
-        ],
-        model_detectors=[lambda hf_id: "wanpipeline" in hf_id.lower()],
-    )
-    register_configs(
-        sampling_param_cls=WanT2V_1_3B_SamplingParams,
-        pipeline_config_cls=TurboWanT2V480PConfig,
-        hf_model_paths=[
-            "IPostYellow/TurboWan2.1-T2V-1.3B-Diffusers",
-        ],
-    )
-    register_configs(
-        sampling_param_cls=WanT2V_14B_SamplingParams,
-        pipeline_config_cls=WanT2V720PConfig,
-        hf_model_paths=[
-            "Wan-AI/Wan2.1-T2V-14B-Diffusers",
-        ],
-    )
-    register_configs(
-        sampling_param_cls=WanT2V_14B_SamplingParams,
-        pipeline_config_cls=TurboWanT2V480PConfig,
-        hf_model_paths=[
-            "IPostYellow/TurboWan2.1-T2V-14B-Diffusers",
-            "IPostYellow/TurboWan2.1-T2V-14B-720P-Diffusers",
-        ],
-    )
-    register_configs(
-        sampling_param_cls=WanI2V_14B_480P_SamplingParam,
-        pipeline_config_cls=WanI2V480PConfig,
-        hf_model_paths=[
-            "Wan-AI/Wan2.1-I2V-14B-480P-Diffusers",
-        ],
-        model_detectors=[lambda hf_id: "wanimagetovideo" in hf_id.lower()],
-    )
-    register_configs(
-        sampling_param_cls=WanI2V_14B_720P_SamplingParam,
-        pipeline_config_cls=WanI2V720PConfig,
-        hf_model_paths=[
-            "Wan-AI/Wan2.1-I2V-14B-720P-Diffusers",
-        ],
-    )
-    register_configs(
-        sampling_param_cls=Turbo_Wan2_2_I2V_A14B_SamplingParam,
-        pipeline_config_cls=TurboWanI2V720Config,
-        hf_model_paths=[
-            "IPostYellow/TurboWan2.2-I2V-A14B-Diffusers",
-        ],
-    )
-    register_configs(
-        sampling_param_cls=Wan2_1_Fun_1_3B_InP_SamplingParams,
-        pipeline_config_cls=WanI2V480PConfig,
-        hf_model_paths=[
-            "weizhou03/Wan2.1-Fun-1.3B-InP-Diffusers",
-        ],
-    )
-    register_configs(
-        sampling_param_cls=Wan2_2_TI2V_5B_SamplingParam,
-        pipeline_config_cls=Wan2_2_TI2V_5B_Config,
-        hf_model_paths=[
-            "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
-        ],
-    )
-    register_configs(
-        sampling_param_cls=Wan2_2_TI2V_5B_SamplingParam,
-        pipeline_config_cls=FastWan2_2_TI2V_5B_Config,
-        hf_model_paths=[
-            "FastVideo/FastWan2.2-TI2V-5B-FullAttn-Diffusers",
-            "FastVideo/FastWan2.2-TI2V-5B-Diffusers",
-        ],
-    )
-    register_configs(
-        sampling_param_cls=Wan2_2_T2V_A14B_SamplingParam,
-        pipeline_config_cls=Wan2_2_T2V_A14B_Config,
-        hf_model_paths=["Wan-AI/Wan2.2-T2V-A14B-Diffusers"],
-    )
-    register_configs(
-        sampling_param_cls=Wan2_2_I2V_A14B_SamplingParam,
-        pipeline_config_cls=Wan2_2_I2V_A14B_Config,
-        hf_model_paths=["Wan-AI/Wan2.2-I2V-A14B-Diffusers"],
-    )
-    register_configs(
-        sampling_param_cls=FastWanT2V480PConfig,
-        pipeline_config_cls=FastWan2_1_T2V_480P_Config,
-        hf_model_paths=[
-            "FastVideo/FastWan2.1-T2V-1.3B-Diffusers",
-        ],
-    )
-    # MOVA
-    register_configs(
-        sampling_param_cls=MOVA_360P_SamplingParams,
-        pipeline_config_cls=MOVA360PConfig,
-        model_detectors=[
-            lambda hf_id: "mova" in hf_id.lower() and "360p" in hf_id.lower()
-        ],
-    )
-    register_configs(
-        sampling_param_cls=MOVA_720P_SamplingParams,
-        pipeline_config_cls=MOVA720PConfig,
-        model_detectors=[
-            lambda hf_id: "mova" in hf_id.lower() and "720p" in hf_id.lower()
-        ],
-    )
-    # FLUX
-    register_configs(
-        sampling_param_cls=FluxSamplingParams,
-        pipeline_config_cls=FluxPipelineConfig,
-        hf_model_paths=[
-            "black-forest-labs/FLUX.1-dev",
-        ],
-        model_detectors=[lambda hf_id: "flux.1" in hf_id.lower()],
-    )
-    register_configs(
-        sampling_param_cls=Flux2KleinSamplingParams,
-        pipeline_config_cls=Flux2KleinPipelineConfig,
-        hf_model_paths=[
-            "black-forest-labs/FLUX.2-klein-4B",
-            "black-forest-labs/FLUX.2-klein-9B",
-        ],
-        model_detectors=[
-            lambda hf_id: "flux.2-klein" in hf_id.lower()
-            or "flux2-klein" in hf_id.lower()
-        ],
-    )
-    register_configs(
-        sampling_param_cls=Flux2SamplingParams,
-        pipeline_config_cls=Flux2PipelineConfig,
-        hf_model_paths=[
-            "black-forest-labs/FLUX.2-dev",
-            "black-forest-labs/FLUX.2-dev-NVFP4",
-        ],
-        model_detectors=[
-            lambda hf_id: "flux.2" in hf_id.lower() and "klein" not in hf_id.lower()
-        ],
-    )
-    register_configs(
-        sampling_param_cls=ZImageTurboSamplingParams,
-        pipeline_config_cls=ZImagePipelineConfig,
-        hf_model_paths=[
-            "Tongyi-MAI/Z-Image-Turbo",
-        ],
-        model_detectors=[lambda hf_id: "z-image-turbo" in hf_id.lower()],
-    )
-    register_configs(
-        sampling_param_cls=ZImageSamplingParams,
-        pipeline_config_cls=ZImagePipelineConfig,
-        hf_model_paths=[
-            "Tongyi-MAI/Z-Image",
-        ],
-        model_detectors=[
-            lambda hf_id: "z-image" in hf_id.lower() and "turbo" not in hf_id.lower()
-        ],
-    )
-    # Qwen-Image
-    register_configs(
-        sampling_param_cls=QwenImageSamplingParams,
-        pipeline_config_cls=QwenImagePipelineConfig,
-        hf_model_paths=["Qwen/Qwen-Image"],
-        model_detectors=[
-            lambda hf_id: "qwen-image" in hf_id.lower()
-            and "edit" not in hf_id.lower()
-            and "layered" not in hf_id.lower()
-            and "2512" not in hf_id.lower()
-        ],
-    )
-    register_configs(
-        sampling_param_cls=QwenImage2512SamplingParams,
-        pipeline_config_cls=QwenImagePipelineConfig,
-        hf_model_paths=["Qwen/Qwen-Image-2512"],
-        model_detectors=[lambda hf_id: "qwen-image-2512" in hf_id.lower()],
-    )
-    register_configs(
-        sampling_param_cls=QwenImageSamplingParams,
-        pipeline_config_cls=QwenImageEditPipelineConfig,
-        hf_model_paths=["Qwen/Qwen-Image-Edit"],
-        model_detectors=[
-            lambda hf_id: "qwen-image-edit" in hf_id.lower()
-            and "2509" not in hf_id.lower()
-            and "2511" not in hf_id.lower()
-        ],
-    )
-
-    register_configs(
-        sampling_param_cls=QwenImageEditPlusSamplingParams,
-        pipeline_config_cls=QwenImageEditPlusPipelineConfig,
-        hf_model_paths=["Qwen/Qwen-Image-Edit-2509"],
-        model_detectors=[lambda hf_id: "qwen-image-edit-2509" in hf_id.lower()],
-    )
-
-    register_configs(
-        sampling_param_cls=QwenImageEditPlusSamplingParams,
-        pipeline_config_cls=QwenImageEditPlus_2511_PipelineConfig,
-        hf_model_paths=["Qwen/Qwen-Image-Edit-2511"],
-        model_detectors=[lambda hf_id: "qwen-image-edit-2511" in hf_id.lower()],
-    )
-
-    register_configs(
-        sampling_param_cls=QwenImageLayeredSamplingParams,
-        pipeline_config_cls=QwenImageLayeredPipelineConfig,
-        hf_model_paths=["Qwen/Qwen-Image-Layered"],
-        model_detectors=[lambda hf_id: "qwen-image-layered" in hf_id.lower()],
-    )
-    register_configs(
-        sampling_param_cls=StableDiffusion3SamplingParams,
-        pipeline_config_cls=StableDiffusion3PipelineConfig,
-        hf_model_paths=[
-            "stabilityai/stable-diffusion-3-medium",
-            "stabilityai/stable-diffusion-3-medium-diffusers",
-            "stabilityai/stable-diffusion-3.5-medium",
-            "stabilityai/stable-diffusion-3.5-medium-diffusers",
-            "stabilityai/stable-diffusion-3.5-large",
-            "stabilityai/stable-diffusion-3.5-large-diffusers",
-        ],
-        model_detectors=[
-            lambda hf_id: "stable-diffusion-3-medium" in hf_id.lower()
-            or "stable-diffusion-3.5-medium" in hf_id.lower()
-            or "stable-diffusion-3.5-large" in hf_id.lower()
-            or "sd3-medium" in hf_id.lower()
-            or "sd3.5-medium" in hf_id.lower()
-            or "sd3.5-large" in hf_id.lower()
-        ],
-    )
-
-    register_configs(
-        sampling_param_cls=GlmImageSamplingParams,
-        pipeline_config_cls=GlmImagePipelineConfig,
-        model_detectors=[lambda hf_id: "glm-image" in hf_id.lower()],
-    )
-    register_configs(
-        sampling_param_cls=Hunyuan3DSamplingParams,
-        pipeline_config_cls=Hunyuan3D2PipelineConfig,
-        hf_model_paths=[
-            "tencent/Hunyuan3D-2",
-        ],
-        model_detectors=[lambda hf_id: "hunyuan3d" in hf_id.lower()],
-    )
-
-    # Helios
-    register_configs(
-        sampling_param_cls=HeliosT2VSamplingParams,
-        pipeline_config_cls=HeliosT2VConfig,
-        hf_model_paths=[
-            "BestWishYsh/Helios-Base",
-        ],
-        model_detectors=[
-            lambda hf_id: "helios" in hf_id.lower()
-            and "mid" not in hf_id.lower()
-            and "distill" not in hf_id.lower()
-        ],
-    )
-    register_configs(
-        sampling_param_cls=HeliosMidSamplingParams,
-        pipeline_config_cls=HeliosMidConfig,
-        hf_model_paths=[
-            "BestWishYsh/Helios-Mid",
-        ],
-    )
-    register_configs(
-        sampling_param_cls=HeliosDistilledSamplingParams,
-        pipeline_config_cls=HeliosDistilledConfig,
-        hf_model_paths=[
-            "BestWishYsh/Helios-Distilled",
-        ],
-    )
-
-    # SANA
-    register_configs(
-        sampling_param_cls=SanaSamplingParams,
-        pipeline_config_cls=SanaPipelineConfig,
-        hf_model_paths=[
-            "Efficient-Large-Model/SANA1.5_1.6B_1024px_diffusers",
-            "Efficient-Large-Model/SANA1.5_4.8B_1024px_diffusers",
-            "Efficient-Large-Model/Sana_1600M_1024px_diffusers",
-            "Efficient-Large-Model/Sana_600M_1024px_diffusers",
-            "Efficient-Large-Model/Sana_1600M_512px_diffusers",
-            "Efficient-Large-Model/Sana_600M_512px_diffusers",
-        ],
-        model_detectors=[lambda hf_id: "sana" in hf_id.lower()],
-    )
-
-    # FireRed-Image-Edit
-    register_configs(
-        sampling_param_cls=QwenImageEditPlusSamplingParams,
-        pipeline_config_cls=QwenImageEditPlusPipelineConfig,
-        hf_model_paths=[
-            "FireRedTeam/FireRed-Image-Edit-1.0",
-            "FireRedTeam/FireRed-Image-Edit-1.1",
-        ],
-    )
-
-    # ErnieImage
-    register_configs(
-        sampling_param_cls=ErnieImageSamplingParams,
-        pipeline_config_cls=ErnieImagePipelineConfig,
-        hf_model_paths=[
-            "baidu/ERNIE-Image",
-            "baidu/ERNIE-Image-Turbo",
-        ],
-        model_detectors=[
-            lambda hf_id: "ernie-image" in hf_id.lower(),
-        ],
-    )
-
-    # JoyAI
-    register_configs(
-        sampling_param_cls=JoyImageEditSamplingParams,
-        pipeline_config_cls=JoyImageEditPipelineConfig,
-        hf_model_paths=[
-            "jdopensource/JoyAI-Image-Edit-Diffusers",
-        ],
-        model_detectors=[
-            lambda hf_id: "joyai-image-edit" in hf_id.lower(),
-        ],
-    )
-
-
-_register_configs()
 
 
 def is_known_non_diffusers_multimodal_model(model_path: str) -> bool:

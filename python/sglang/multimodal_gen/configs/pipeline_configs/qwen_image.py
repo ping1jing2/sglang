@@ -18,6 +18,7 @@ from sglang.multimodal_gen.configs.pipeline_configs.base import (
     maybe_unpad_latents,
     shard_rotary_emb_for_sp,
 )
+from sglang.multimodal_gen.registry import register_model
 from sglang.multimodal_gen.configs.post_training.pipeline_configs import (
     QwenImageRolloutPipelineMixin,
 )
@@ -73,10 +74,6 @@ def qwen_image_postprocess_text(
             return prompt_embeds, None
         return prompt_embeds, encoder_attention_mask
     return prompt_embeds
-
-
-def qwen_image_edit_postprocess_text(outputs, _text_inputs):
-    return qwen_image_postprocess_text(outputs, _text_inputs, drop_idx=64)
 
 
 def _normalize_prompt_list(prompt):
@@ -358,9 +355,6 @@ class QwenImageEditPipelineConfig(QwenImagePipelineConfig):
     """Configuration for the QwenImageEdit pipeline."""
 
     task_type: ModelTaskType = ModelTaskType.I2I
-    postprocess_text_funcs: tuple[Callable[[str], str], ...] = field(
-        default_factory=lambda: (qwen_image_edit_postprocess_text,)
-    )
 
     def _prepare_edit_cond_kwargs(
         self, batch, prompt_embeds, rotary_emb, device, dtype
@@ -697,3 +691,15 @@ class QwenImageLayeredPipelineConfig(QwenImageEditPipelineConfig):
         latents = latents.permute(0, 2, 1, 3, 4).view(-1, c, 1, h, w)
         # latents = latents.reshape(batch_size, channels // (2 * 2), 1, height, width)
         return latents
+
+
+def register():
+    from sglang.multimodal_gen.configs.sample.qwenimage import (
+        QwenImageSamplingParams,
+    )
+
+    register_model(
+        sampling_param_cls=QwenImageSamplingParams,
+        pipeline_config_cls=QwenImagePipelineConfig,
+        model_detectors=[lambda hf_id: "qwenimage" in hf_id.lower()],
+    )

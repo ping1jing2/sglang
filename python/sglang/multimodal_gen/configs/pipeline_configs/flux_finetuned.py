@@ -19,6 +19,7 @@ from sglang.multimodal_gen.configs.pipeline_configs.flux import (
     Flux2PipelineConfig,
     _unpatchify_latents,
 )
+from sglang.multimodal_gen.registry import register_model
 
 
 @dataclass
@@ -101,3 +102,16 @@ class Flux2FinetunedPipelineConfig(Flux2PipelineConfig):
         # Distilled/Finetuned VAE: Flux2TinyAutoEncoder doesn't need external scaling
         scale = torch.tensor(1.0, device=device, dtype=dtype).view(1, 1, 1, 1)
         return scale, None
+
+
+def register():
+    from sglang.multimodal_gen.configs.sample.flux import Flux2SamplingParams
+
+    register_model(
+        sampling_param_cls=Flux2SamplingParams,
+        pipeline_config_cls=Flux2FinetunedPipelineConfig,
+        model_detectors=[
+            lambda hf_id: "flux.2" in hf_id.lower()
+            and ("tiny" in hf_id.lower() or "finetuned" in hf_id.lower()),
+        ],
+    )

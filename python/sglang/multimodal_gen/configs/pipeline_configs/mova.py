@@ -18,6 +18,7 @@ from sglang.multimodal_gen.configs.pipeline_configs.base import (
     PipelineConfig,
 )
 from sglang.multimodal_gen.configs.pipeline_configs.wan import t5_postprocess_text
+from sglang.multimodal_gen.registry import register_model
 from sglang.multimodal_gen.runtime.utils.logging_utils import init_logger
 
 logger = init_logger(__name__)
@@ -183,3 +184,14 @@ class MOVA720PConfig(MOVAPipelineConfig):
     """Configuration for MOVA 720P (text+image -> video+audio) pipelines."""
 
     max_area: int = 720 * 1280
+
+
+def register():
+    from sglang.multimodal_gen.configs.sample.mova import MOVASamplingParams
+
+    register_model(
+        sampling_param_cls=MOVASamplingParams,
+        pipeline_config_cls=MOVA360PConfig,
+        hf_model_paths=["BestWishYsh/MOVA-360P"],
+        model_detectors=[lambda hf_id: "mova" in hf_id.lower()],
+    )

@@ -9,6 +9,7 @@ from sglang.multimodal_gen.configs.pipeline_configs.base import (
     ModelTaskType,
     PipelineConfig,
 )
+from sglang.multimodal_gen.registry import register_model
 
 
 @dataclass
@@ -71,3 +72,15 @@ class Hunyuan3D2PipelineConfig(PipelineConfig):
         latent_shape = self.vae_config.arch_config.latent_shape
         shape = (batch_size, *latent_shape)
         return shape
+
+
+def register():
+    from sglang.multimodal_gen.configs.sample.hunyuan3d import (
+        Hunyuan3DSamplingParams,
+    )
+
+    register_model(
+        sampling_param_cls=Hunyuan3DSamplingParams,
+        pipeline_config_cls=Hunyuan3D2PipelineConfig,
+        model_detectors=[lambda hf_id: "hunyuan3d" in hf_id.lower()],
+    )

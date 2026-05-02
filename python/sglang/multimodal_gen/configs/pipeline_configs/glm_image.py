@@ -12,6 +12,7 @@ from sglang.multimodal_gen.configs.pipeline_configs.base import (
     ModelTaskType,
     SpatialImagePipelineConfig,
 )
+from sglang.multimodal_gen.registry import register_model
 
 
 @dataclass
@@ -96,3 +97,13 @@ class GlmImagePipelineConfig(SpatialImagePipelineConfig):
 
     def post_decoding(self, frames, server_args):
         return self.image_processor.postprocess(frames, output_type="latent")
+
+
+def register():
+    from sglang.multimodal_gen.configs.sample.glmimage import GlmImageSamplingParams
+
+    register_model(
+        sampling_param_cls=GlmImageSamplingParams,
+        pipeline_config_cls=GlmImagePipelineConfig,
+        model_detectors=[lambda hf_id: "glm-image" in hf_id.lower()],
+    )
