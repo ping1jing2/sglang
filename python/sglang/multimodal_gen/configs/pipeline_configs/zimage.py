@@ -15,6 +15,7 @@ from sglang.multimodal_gen.configs.pipeline_configs.base import (
     ImagePipelineConfig,
     ModelTaskType,
 )
+from sglang.multimodal_gen.registry import register_model
 from sglang.multimodal_gen.configs.post_training.pipeline_configs import (
     ZImageRolloutPipelineMixin,
 )
@@ -376,3 +377,13 @@ class ZImagePipelineConfig(ZImageRolloutPipelineMixin, ImagePipelineConfig):
                 else None
             ),
         }
+
+
+def register():
+    from sglang.multimodal_gen.configs.sample.zimage import ZImageSamplingParams
+
+    register_model(
+        sampling_param_cls=ZImageSamplingParams,
+        pipeline_config_cls=ZImagePipelineConfig,
+        model_detectors=[lambda hf_id: "zimage" in hf_id.lower()],
+    )
