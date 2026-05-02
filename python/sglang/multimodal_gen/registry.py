@@ -45,6 +45,8 @@ logger = init_logger(__name__)
 
 _PIPELINE_REGISTRY: Dict[str, Type[ComposedPipelineBase]] = {}
 
+# Registry for pipeline configuration classes (for safetensors files without model_index.json)
+# Maps pipeline_class_name -> (PipelineConfig class, SamplingParams class)
 _PIPELINE_CONFIG_REGISTRY: Dict[str, Tuple[Type[PipelineConfig], Type[Any]]] = {}
 
 
@@ -92,6 +94,9 @@ def _discover_and_register_pipelines():
                         )
                     _PIPELINE_REGISTRY[cls.pipeline_name] = cls
 
+                    # Special handling for ComfyUI Pipelines:
+                    # Auto-register config classes if Pipeline class has them defined
+                    # since comfyui get model from a single weight file, so we need to register the config classes here
                     if hasattr(cls, "pipeline_config_cls") and hasattr(
                         cls, "sampling_params_cls"
                     ):
@@ -130,10 +135,13 @@ class ConfigInfo:
     pipeline_config_cls: Type[PipelineConfig]
 
 
+# The central registry mapping a model name to its configuration information
 _CONFIG_REGISTRY: Dict[str, ConfigInfo] = {}
 
+# Mappings from Hugging Face model paths to our internal model names
 _MODEL_HF_PATH_TO_NAME: Dict[str, str] = {}
 
+# Detectors to identify model families from paths or class names
 _MODEL_NAME_DETECTORS: List[Tuple[str, Callable[[str], bool]]] = []
 
 _configs_discovered: bool = False
@@ -321,6 +329,11 @@ def _get_config_info(
 
     # 2b. Match local HuggingFace cache snapshot/blob paths such as:
     #   .../models--org--repo/snapshots/<hash>
+    # This lets users pass a local HF cache snapshot directory directly even
+    # when its basename is only the snapshot hash.
+    # Example:
+    #    /xxx/models--black-forest-labs--FLUX.2-dev-NVFP4/snapshots/142b87e70bc3006937b7093d89ff287b5f59f071
+    # -> models--black-forest-labs--flux.2-dev-nvfp4 (to match with cache_repo_fragment)
     normalized_model_path = _normalize_hf_cache_path(model_path)
     for registered_model_hf_id in all_model_hf_paths:
         cache_repo_fragment = (
