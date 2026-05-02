@@ -19,6 +19,7 @@ from sglang.multimodal_gen.configs.pipeline_configs.base import (
     ModelTaskType,
     PipelineConfig,
 )
+from sglang.multimodal_gen.registry import register_model
 
 PROMPT_TEMPLATE_ENCODE_VIDEO = (
     "<|start_header_id|>system<|end_header_id|>\n\nDescribe the video by detailing the following aspects: "
@@ -108,3 +109,26 @@ class FastHunyuanConfig(HunyuanConfig):
 
     # No need to re-specify guidance_scale or embedded_cfg_scale as they
     # already have the desired values from HunyuanConfig
+
+
+def register():
+    from sglang.multimodal_gen.configs.sample.hunyuan import (
+        FastHunyuanSamplingParam,
+        HunyuanSamplingParams,
+    )
+
+    register_model(
+        sampling_param_cls=HunyuanSamplingParams,
+        pipeline_config_cls=HunyuanConfig,
+        hf_model_paths=[
+            "hunyuanvideo-community/HunyuanVideo",
+        ],
+        model_detectors=[lambda hf_id: "hunyuanvideo" in hf_id.lower()],
+    )
+    register_model(
+        sampling_param_cls=FastHunyuanSamplingParam,
+        pipeline_config_cls=FastHunyuanConfig,
+        hf_model_paths=[
+            "FastVideo/FastHunyuan-diffusers",
+        ],
+    )
