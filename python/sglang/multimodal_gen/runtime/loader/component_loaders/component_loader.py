@@ -214,13 +214,13 @@ class ComponentLoader(ABC):
         """
         avoid multiple registration
         """
-        if cls._loaders_registered:
+        if ComponentLoader._loaders_registered:
             return
 
         package_dir = os.path.dirname(__file__)
         package_name = (
             __package__
-            or "sglang.multimodal_gen.runtime.loader.component_loaders.component_loaders"
+            or "sglang.multimodal_gen.runtime.loader.component_loaders"
         )
 
         for _, name, _ in pkgutil.iter_modules([package_dir]):
@@ -232,7 +232,7 @@ class ComponentLoader(ABC):
             except ImportError as e:
                 logger.warning(f"Failed to import loader component {name}: {e}")
 
-        cls._loaders_registered = True
+        ComponentLoader._loaders_registered = True
 
     @classmethod
     def resolve_transformers_or_diffusers(
