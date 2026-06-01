@@ -41,7 +41,7 @@ env:
 jobs:
 
   compute-diffusion-partitions:
-    if: github.repository == 'sgl-project/sglang'
+    if: github.repository == 'ping1jing2/sglang'
     runs-on: ubuntu-latest
     outputs:
       matrix-1npu: ${{ steps.compute.outputs.matrix-1npu }}
