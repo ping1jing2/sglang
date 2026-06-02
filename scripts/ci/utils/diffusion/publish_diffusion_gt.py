@@ -47,7 +47,7 @@ else:
         verify_token_permissions,
     )
 
-REPO_OWNER = "sgl-project"
+REPO_OWNER = "e-martirosian"
 REPO_NAME = "ci-data"
 BRANCH = "main"
 DEFAULT_TARGET_DIR = "diffusion-ci/consistency_gt/sglang_generated"
