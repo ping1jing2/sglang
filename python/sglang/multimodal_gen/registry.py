@@ -366,11 +366,14 @@ KNOWN_NON_DIFFUSERS_DIFFUSION_MODEL_PATTERNS: Dict[str, str] = {
 }
 
 
-def register_configs(
+def register_model(
     sampling_param_cls: Any,
     pipeline_config_cls: Type[PipelineConfig],
     hf_model_paths: Optional[List[str]] = None,
     model_detectors: Optional[List[Callable[[str], bool]]] = None,
+    pipeline_config_registry_entries: Optional[
+        Dict[str, Tuple[Type[PipelineConfig], Type[Any]]]
+    ] = None,
 ) -> str:
     """
     Registers configuration classes for a new model family.
@@ -392,7 +395,15 @@ def register_configs(
     if model_detectors:
         for detector in model_detectors:
             _MODEL_NAME_DETECTORS.append((model_id, detector))
+
+    if pipeline_config_registry_entries:
+        for pipeline_name, (pc_cls, sp_cls) in pipeline_config_registry_entries.items():
+            _PIPELINE_CONFIG_REGISTRY.setdefault(pipeline_name, (pc_cls, sp_cls))
+
     return model_id
+
+
+register_configs = register_model
 
 
 def register_pipeline(
@@ -453,6 +464,44 @@ def register_pipeline(
         pipeline_name,
         pipeline_cls.__module__,
     )
+
+
+_configs_discovered: bool = False
+
+
+def _discover_and_register_configs() -> None:
+    global _configs_discovered
+    if _configs_discovered:
+        return
+    _configs_discovered = True
+
+    package_name = "sglang.multimodal_gen.configs.pipeline_configs"
+    package = importlib.import_module(package_name)
+
+    for _, module_name, ispkg in pkgutil.walk_packages(
+        package.__path__, package.__name__ + "."
+    ):
+        if not ispkg:
+            try:
+                config_module = importlib.import_module(module_name)
+            except Exception as exc:
+                logger.warning(
+                    "Skipping config module %s during discovery due to import failure: %s",
+                    module_name,
+                    exc,
+                )
+                logger.debug(
+                    "Config import failure details for %s", module_name, exc_info=True
+                )
+                continue
+            if hasattr(config_module, "register"):
+                try:
+                    config_module.register()
+                except Exception as exc:
+                    logger.warning(
+                        f"register() failed for {module_name}: {exc}",
+                        exc_info=True,
+                    )
 
 
 def get_model_short_name(model_id: str) -> str:
@@ -842,6 +891,9 @@ def _register_configs():
         model_detectors=[
             lambda path: "ltx-2.3" in path.lower(),
         ],
+        pipeline_config_registry_entries={
+            "LTX2TwoStageHQPipeline": (LTX2PipelineConfig, LTX23HQSamplingParams),
+        },
     )
     # Keeps the LTX-2 pipeline class; only component geometry and the pinned
     # distilled schedule differ. Only the `-Diffusers` repo is listed --
@@ -854,11 +906,6 @@ def _register_configs():
         model_detectors=[
             lambda path: "ltx-2.5" in path.lower(),
         ],
-    )
-    # register dedicated sampling params for LTX2TwoStageHQPipeline
-    _PIPELINE_CONFIG_REGISTRY.setdefault(
-        "LTX2TwoStageHQPipeline",
-        (LTX2PipelineConfig, LTX23HQSamplingParams),
     )
 
     # Hunyuan
